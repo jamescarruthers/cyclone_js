@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cyclone &mdash; three.js tribute</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: #0b1a2a; color: #fff;
+      font-family: -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif; }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; }
+
+    #hud {
+      position: absolute; top: 12px; left: 12px; right: 12px;
+      display: flex; justify-content: space-between; gap: 12px;
+      pointer-events: none; z-index: 5;
+    }
+    .panel {
+      background: rgba(5, 15, 30, 0.55);
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 8px 12px; border-radius: 6px;
+      font-size: 13px; line-height: 1.5;
+      backdrop-filter: blur(3px);
+    }
+    .panel b { color: #ffd257; font-weight: 600; }
+    .panel .warn { color: #ff6b6b; }
+    .panel .good { color: #8bffa0; }
+
+    #bottom {
+      position: absolute; left: 12px; right: 12px; bottom: 12px;
+      display: flex; justify-content: space-between; align-items: flex-end;
+      pointer-events: none; z-index: 5;
+    }
+    #help {
+      font-size: 12px; color: rgba(255,255,255,0.85);
+      max-width: 340px;
+    }
+    #status {
+      font-size: 15px; text-align: right;
+      min-width: 180px;
+    }
+
+    #overlay {
+      position: absolute; inset: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(5, 12, 22, 0.75);
+      backdrop-filter: blur(2px);
+      pointer-events: auto;
+    }
+    #overlay .card {
+      background: #0f2338;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px;
+      padding: 22px 28px;
+      max-width: 520px; text-align: center;
+      box-shadow: 0 12px 50px rgba(0,0,0,0.5);
+    }
+    #overlay h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: 1px; }
+    #overlay h2 { margin: 0 0 14px; font-size: 14px; font-weight: 400; color: #9fb8d0; }
+    #overlay p  { margin: 10px 0; font-size: 13px; line-height: 1.55; color: #cfe1f3; }
+    #overlay button {
+      margin-top: 14px;
+      background: #ffd257; color: #10223a; border: 0;
+      font-weight: 600; padding: 10px 20px; border-radius: 6px;
+      cursor: pointer; font-size: 14px;
+    }
+    #overlay button:hover { filter: brightness(1.08); }
+    #overlay .hidden { display: none; }
+
+    kbd {
+      display: inline-block; padding: 1px 6px; margin: 0 2px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 3px; font-family: inherit;
+      font-size: 11px; color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <div class="panel">
+      <div>
+        CRATES <b id="hud-delivered">0</b>/5
+        &nbsp;&middot;&nbsp; CARRY <b id="hud-carried">0</b>
+        &nbsp;&middot;&nbsp; LIVES <b id="hud-lives">3</b>
+        &nbsp;&middot;&nbsp; SCORE <b id="hud-score">0</b>
+      </div>
+      <div>
+        TIME <b id="hud-time">5:00</b>
+        &nbsp;&middot;&nbsp; COMPASS <b id="hud-compass">N 000°</b>
+      </div>
+      <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
+        <span style="font-size:11px;">FUEL</span>
+        <div style="width:140px; height:10px; border:1px solid rgba(255,255,255,0.3); border-radius:2px; overflow:hidden;">
+          <div id="hud-fuel-bar" style="height:100%; width:100%; background:linear-gradient(90deg,#ff6b6b,#ffd257,#8bffa0);"></div>
+        </div>
+        <span id="hud-fuel-pct" style="font-size:11px;">100%</span>
+      </div>
+    </div>
+    <div class="panel" id="status">
+      <span id="status-msg">Take off and collect five crates.</span>
+    </div>
+  </div>
+
+  <div id="bottom">
+    <div class="panel" id="help">
+      <b>Controls</b><br/>
+      <kbd>W</kbd>/<kbd>S</kbd> pitch &middot;
+      <kbd>A</kbd>/<kbd>D</kbd> roll &middot;
+      <kbd>Q</kbd>/<kbd>E</kbd> yaw<br/>
+      <kbd>Space</kbd> climb &middot;
+      <kbd>Shift</kbd> descend &middot;
+      <kbd>M</kbd> map<br/>
+      <kbd>C</kbd> camera &middot;
+      <kbd>R</kbd> restart
+    </div>
+    <div class="panel">
+      Island <b id="hud-island">&mdash;</b><br/>
+      Altitude <b id="hud-alt">0</b> m &middot;
+      Speed <b id="hud-spd">0</b>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <div class="card" id="card-intro">
+      <h1>CYCLONE</h1>
+      <h2>a three.js tribute to Vortex Software&rsquo;s 1985 ZX Spectrum classic</h2>
+      <p>
+        From the decrypted ROM &ndash; <i>&ldquo;COLLECT FIVE CRATES AND RETURN TO BASE&rdquo;</i>.
+        You&rsquo;re the pilot of a rescue helicopter over the Cyclone archipelago
+        (<b>BASE</b>, <b>BANANA</b>, <b>KOKOLA</b>, <b>LAGOON</b>, <b>PEAK</b>,
+        <b>GILLIGANS</b>, <b>RED</b>, <b>SKEG</b>, <b>BONE</b>, <b>CLAW</b>,
+        <b>ENTERPRISE</b>&hellip;).
+      </p>
+      <p>
+        A massive <b>cyclone</b> is sweeping through &mdash; land beside a crate
+        to pick it up, then return to the red&nbsp;&amp;&nbsp;white helipad on <b>BASE</b>
+        to deliver it.  Wind speed increases as you near the cyclone: the closer
+        you fly, the more it buffets you away.
+      </p>
+      <p>
+        <kbd>W</kbd>/<kbd>S</kbd> tilt forward/back &middot;
+        <kbd>A</kbd>/<kbd>D</kbd> bank left/right &middot;
+        <kbd>Q</kbd>/<kbd>E</kbd> yaw &middot;
+        <kbd>Space</kbd>/<kbd>Shift</kbd> altitude
+      </p>
+      <button id="btn-start">Start Mission</button>
+    </div>
+    <div class="card hidden" id="card-end">
+      <h1 id="end-title">Mission Complete</h1>
+      <h2 id="end-sub"></h2>
+      <p id="end-body"></p>
+      <button id="btn-restart">Fly Again</button>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
