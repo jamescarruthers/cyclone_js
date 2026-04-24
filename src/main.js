@@ -6,6 +6,7 @@ import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
 import { createMapView, createCompass } from './mapview.js';
 import { sound } from './sound.js';
+import { setupTouchControls } from './touch-controls.js';
 
 // -----------------------------------------------------------------------
 // Tunables — rough analogues of the constants the original reads out of
@@ -102,8 +103,10 @@ pad.position.y += 0.02;
 scene.add(pad);
 
 const helicopter = createHelicopter();
-helicopter.group.position.copy(home.topCenter);
-helicopter.group.position.y += 3.5;
+// Seed the ROM state so posX/posY match BASE
+helicopter.setWorldPosition(new THREE.Vector3(
+  home.topCenter.x, home.topCenter.y + 14, home.topCenter.z,
+));
 scene.add(helicopter.group);
 
 // Crates — deterministic positions derived from island records
@@ -125,10 +128,8 @@ for (let i = 0; i < CRATE_SPAWN; i++) {
   crates.push(c);
 }
 
-// Cyclone — starts in the NE corner, matching the ROM's F230+... wind source area
-const cyclone = createCyclone();
-cyclone.speed = CYCLONE_SPEED;
-cyclone.group.position.set(world.worldSize * 0.3, 0, -world.worldSize * 0.25);
+// Cyclone — deterministic 50 Hz waypoint tour through the archipelago
+const cyclone = createCyclone(world.worldSize);
 scene.add(cyclone.group);
 
 // Hazards
@@ -142,6 +143,13 @@ scene.add(survivors.group);
 // UI overlays
 const mapView = createMapView(world);
 const compass = createCompass();
+
+// Touch controls: always mounted, but CSS hides them on non-coarse pointers.
+// `?touch=1` in the URL forces them on for testing from desktop.
+if (new URL(location.href).searchParams.get('touch') === '1') {
+  document.body.classList.add('force-touch');
+}
+setupTouchControls(keys);
 
 // Input ------------------------------------------------------------------
 const keys = Object.create(null);
@@ -203,10 +211,10 @@ function loseLife(reason) {
     return;
   }
   setStatus(`${reason} — ${state.lives} ${state.lives === 1 ? 'life' : 'lives'} left.`, 'warn');
-  helicopter.group.position.copy(home.topCenter);
-  helicopter.group.position.y += 20;
-  helicopter.velocity.set(0, 0, 0);
-  helicopter.group.rotation.set(0, 0, 0);
+  helicopter.reset();
+  helicopter.setWorldPosition(new THREE.Vector3(
+    home.topCenter.x, home.topCenter.y + 20, home.topCenter.z,
+  ));
   state.fuel = Math.max(state.fuel, 60);
   state.noFuel = false;
   state.carried = 0;
@@ -247,16 +255,20 @@ function tick() {
     state.time = t;
     state.remaining = Math.max(0, TIME_LIMIT - t);
 
-    // Flight input
+    // Flight input — maps directly to the ROM's FORWARD / TURN_L / TURN_R /
+    // UP / DOWN buttons (see helicopter.js romTick).  There is no pitch
+    // or roll axis in the original — the helicopter moves only in the
+    // direction it is facing, so A/D turn the heading rather than strafe.
     const ctrl = {
-      pitch: (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0),
-      roll:  (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
-      yaw:   (keys.KeyQ ? 1 : 0) - (keys.KeyE ? 1 : 0),
-      lift:  (keys.Space ? 1 : 0) - (keys.ShiftLeft || keys.ShiftRight ? 1 : 0),
+      pitch: (keys.KeyW || keys.ArrowUp    ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0),
+      yaw:   (keys.KeyD || keys.KeyE || keys.ArrowRight ? 1 : 0)
+           - (keys.KeyA || keys.KeyQ || keys.ArrowLeft  ? 1 : 0),
+      lift:  (keys.Space ? 1 : 0)
+           - (keys.ShiftLeft || keys.ShiftRight ? 1 : 0),
     };
 
     // Fuel: burned whenever we have any input, at idle rate otherwise.
-    const moving = ctrl.pitch || ctrl.roll || ctrl.lift || ctrl.yaw;
+    const moving = ctrl.pitch || ctrl.lift || ctrl.yaw;
     const burn = FUEL_BURN * (moving ? 1.4 : 0.5);
     state.fuel = Math.max(0, state.fuel - burn * dt);
     if (state.fuel <= 0 && !state.noFuel) {
@@ -264,9 +276,9 @@ function tick() {
       setStatus('NO FUEL — auto-descending!', 'warn');
       sound.noFuel();
     }
-    // If out of fuel, force descent by overriding lift to 0 (let gravity pull us down)
+    // If out of fuel, force descent (lift = -1) and kill thrust.
     const effectiveCtrl = state.noFuel
-      ? { pitch: 0, roll: 0, yaw: 0, lift: -1 }
+      ? { pitch: 0, yaw: 0, lift: -1 }
       : ctrl;
     helicopter.update(dt, effectiveCtrl);
 
@@ -433,10 +445,7 @@ function tick() {
 
     // Continuous sounds
     sound.windSet(state.wind);
-    // Rotor pitch tracks collective effort
-    const throttle = Math.max(
-      Math.abs(ctrl.pitch), Math.abs(ctrl.roll), Math.abs(ctrl.yaw), Math.abs(ctrl.lift)
-    );
+    const throttle = Math.max(Math.abs(ctrl.pitch), Math.abs(ctrl.yaw), Math.abs(ctrl.lift));
     sound.rotorSet(throttle);
 
     // Low-fuel warning chirp (every ~2s)
