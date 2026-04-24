@@ -75,6 +75,58 @@
       border-radius: 3px; font-family: inherit;
       font-size: 11px; color: #fff;
     }
+
+    /* --- Touch controls ------------------------------------------------ */
+    #touch-controls {
+      position: fixed; inset: 0; pointer-events: none; z-index: 7;
+      display: none;                      /* shown via media query below */
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: none;
+    }
+    .tc-cluster {
+      position: absolute; display: flex; gap: 10px;
+      pointer-events: none;
+    }
+    .tc-left  { left: 14px;  bottom: 16px; align-items: flex-end; }
+    .tc-right { right: 14px; bottom: 16px; flex-direction: column; }
+    .tc-top   { right: 14px; top: 14px; }
+    .tc-btn {
+      pointer-events: auto;
+      width: 68px; height: 68px; border-radius: 50%;
+      background: rgba(10, 20, 36, 0.55);
+      color: #fff; font-size: 22px; font-weight: 700;
+      border: 2px solid rgba(255, 210, 87, 0.75);
+      backdrop-filter: blur(3px);
+      -webkit-tap-highlight-color: transparent;
+      cursor: pointer;
+      transition: transform 80ms, background 80ms, box-shadow 80ms;
+      display: flex; align-items: center; justify-content: center;
+      font-family: inherit;
+    }
+    .tc-btn.tc-fwd   { width: 88px; height: 88px; font-size: 28px; border-color: #ffd257; }
+    .tc-btn.tc-alt   { width: 72px; height: 72px; font-size: 16px; }
+    .tc-btn.tc-small { width: 58px; height: 40px; font-size: 12px; border-radius: 8px; border-width: 1px; }
+    .tc-btn.tc-down {
+      background: rgba(255, 210, 87, 0.35);
+      transform: scale(0.94);
+      box-shadow: 0 0 0 3px rgba(255, 210, 87, 0.4);
+    }
+
+    /* Show touch controls on coarse-pointer devices or when ?touch=1 */
+    @media (pointer: coarse) {
+      #touch-controls { display: block; }
+      #help { display: none; }      /* keyboard help is not relevant on touch */
+    }
+    body.force-touch #touch-controls { display: block; }
+    body.force-touch #help { display: none; }
+
+    /* On small screens shrink the top HUD so it doesn't crowd the top buttons */
+    @media (max-width: 640px) {
+      #hud { gap: 6px; font-size: 11px; }
+      #hud .panel { padding: 6px 8px; }
+      .tc-top { top: 8px; right: 8px; }
+    }
   </style>
 </head>
 <body>

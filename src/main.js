@@ -6,6 +6,7 @@ import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
 import { createMapView, createCompass } from './mapview.js';
 import { sound } from './sound.js';
+import { setupTouchControls } from './touch-controls.js';
 
 // -----------------------------------------------------------------------
 // Tunables — rough analogues of the constants the original reads out of
@@ -127,10 +128,8 @@ for (let i = 0; i < CRATE_SPAWN; i++) {
   crates.push(c);
 }
 
-// Cyclone — starts in the NE corner, matching the ROM's F230+... wind source area
-const cyclone = createCyclone();
-cyclone.speed = CYCLONE_SPEED;
-cyclone.group.position.set(world.worldSize * 0.3, 0, -world.worldSize * 0.25);
+// Cyclone — deterministic 50 Hz waypoint tour through the archipelago
+const cyclone = createCyclone(world.worldSize);
 scene.add(cyclone.group);
 
 // Hazards
@@ -144,6 +143,13 @@ scene.add(survivors.group);
 // UI overlays
 const mapView = createMapView(world);
 const compass = createCompass();
+
+// Touch controls: always mounted, but CSS hides them on non-coarse pointers.
+// `?touch=1` in the URL forces them on for testing from desktop.
+if (new URL(location.href).searchParams.get('touch') === '1') {
+  document.body.classList.add('force-touch');
+}
+setupTouchControls(keys);
 
 // Input ------------------------------------------------------------------
 const keys = Object.create(null);
