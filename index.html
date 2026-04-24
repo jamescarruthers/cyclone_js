@@ -82,15 +82,26 @@
 
   <div id="hud">
     <div class="panel">
-      Crates delivered <b id="hud-delivered">0</b>
-      &nbsp;/ remaining <b id="hud-remaining">0</b>
-      &nbsp;/ carried <b id="hud-carried">0</b>
-      <br/>
-      Time <b id="hud-time">0:00</b>
-      &nbsp;&middot;&nbsp; Cyclone kills <span class="warn" id="hud-kills">0</span>
+      <div>
+        CRATES <b id="hud-delivered">0</b>/5
+        &nbsp;&middot;&nbsp; CARRY <b id="hud-carried">0</b>
+        &nbsp;&middot;&nbsp; LIVES <b id="hud-lives">3</b>
+        &nbsp;&middot;&nbsp; SCORE <b id="hud-score">0</b>
+      </div>
+      <div>
+        TIME <b id="hud-time">5:00</b>
+        &nbsp;&middot;&nbsp; COMPASS <b id="hud-compass">N 000°</b>
+      </div>
+      <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
+        <span style="font-size:11px;">FUEL</span>
+        <div style="width:140px; height:10px; border:1px solid rgba(255,255,255,0.3); border-radius:2px; overflow:hidden;">
+          <div id="hud-fuel-bar" style="height:100%; width:100%; background:linear-gradient(90deg,#ff6b6b,#ffd257,#8bffa0);"></div>
+        </div>
+        <span id="hud-fuel-pct" style="font-size:11px;">100%</span>
+      </div>
     </div>
     <div class="panel" id="status">
-      <span id="status-msg">Take off and collect the crates.</span>
+      <span id="status-msg">Take off and collect five crates.</span>
     </div>
   </div>
 
@@ -102,8 +113,9 @@
       <kbd>Q</kbd>/<kbd>E</kbd> yaw<br/>
       <kbd>Space</kbd> climb &middot;
       <kbd>Shift</kbd> descend &middot;
-      <kbd>R</kbd> restart &middot;
-      <kbd>C</kbd> camera
+      <kbd>M</kbd> map<br/>
+      <kbd>C</kbd> camera &middot;
+      <kbd>R</kbd> restart
     </div>
     <div class="panel">
       Island <b id="hud-island">&mdash;</b><br/>

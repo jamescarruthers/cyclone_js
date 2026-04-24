@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { ISLAND_DATA } from './islands_data.js';
 
-// Deterministic PRNG so the archipelago is stable between loads.
+// Deterministic PRNG so the palms / rocks stay put between reloads.
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
@@ -12,12 +13,17 @@ function mulberry32(seed) {
   };
 }
 
-export function createWorld({ worldSize = 600, islandCount = 9, seed = 1, names = [] } = {}) {
+// The original arranges islands on a 32 x 24 character grid.  We map that
+// directly into the 3D world so the relative layout matches the 1985 ROM.
+const GRID_W = 32, GRID_H = 24;
+export const WORLD_SIZE = 600;
+
+export function createWorld({ seed = 1 } = {}) {
   const group = new THREE.Group();
   const rand = mulberry32(seed);
 
   // -------- Sky dome with gradient -----------------------------------
-  const skyGeo = new THREE.SphereGeometry(worldSize * 1.4, 32, 16);
+  const skyGeo = new THREE.SphereGeometry(WORLD_SIZE * 1.4, 32, 16);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     uniforms: {
@@ -32,7 +38,7 @@ export function createWorld({ worldSize = 600, islandCount = 9, seed = 1, names 
       varying vec3 vP;
       uniform vec3 top; uniform vec3 bottom;
       void main() {
-        float h = clamp(vP.y / ${(worldSize * 1.4).toFixed(1)} * 1.2 + 0.1, 0.0, 1.0);
+        float h = clamp(vP.y / ${(WORLD_SIZE * 1.4).toFixed(1)} * 1.2 + 0.1, 0.0, 1.0);
         gl_FragColor = vec4(mix(bottom, top, h), 1.0);
       }
     `,
@@ -40,58 +46,34 @@ export function createWorld({ worldSize = 600, islandCount = 9, seed = 1, names 
   group.add(new THREE.Mesh(skyGeo, skyMat));
 
   // -------- Sea --------------------------------------------------------
-  const seaGeo = new THREE.PlaneGeometry(worldSize * 2.4, worldSize * 2.4, 64, 64);
+  const seaGeo = new THREE.PlaneGeometry(WORLD_SIZE * 2.4, WORLD_SIZE * 2.4, 64, 64);
   seaGeo.rotateX(-Math.PI / 2);
   const seaMat = new THREE.MeshStandardMaterial({
-    color: 0x1f6ea0,
-    roughness: 0.85, metalness: 0.05,
-    flatShading: true,
+    color: 0x1f6ea0, roughness: 0.85, metalness: 0.05, flatShading: true,
   });
   const sea = new THREE.Mesh(seaGeo, seaMat);
-  sea.position.y = 0;
   group.add(sea);
 
-  // subtle wave displacement
-  const originalY = new Float32Array(seaGeo.attributes.position.count);
-  for (let i = 0; i < seaGeo.attributes.position.count; i++) {
-    originalY[i] = seaGeo.attributes.position.getY(i);
-  }
-
-  // -------- Islands ----------------------------------------------------
+  // -------- Islands at their extracted ROM positions ------------------
+  // Map (col, row) in [0..31, 0..23] -> world (x, z).
   const islands = [];
-  const occupied = [];
-  function placeIsland(radius) {
-    for (let tries = 0; tries < 400; tries++) {
-      const x = (rand() * 2 - 1) * (worldSize * 0.42);
-      const z = (rand() * 2 - 1) * (worldSize * 0.42);
-      const c = new THREE.Vector3(x, 0, z);
-      let ok = true;
-      for (const o of occupied) {
-        if (c.distanceTo(o.c) < radius + o.r + 28) { ok = false; break; }
-      }
-      if (ok) { occupied.push({ c, r: radius }); return c; }
-    }
-    return new THREE.Vector3((rand()*2-1)*worldSize*0.3, 0, (rand()*2-1)*worldSize*0.3);
-  }
-
-  // The home island (index 0) — larger & central-ish
-  const homeCenter = new THREE.Vector3((rand()*2-1)*30, 0, (rand()*2-1)*30);
-  occupied.push({ c: homeCenter, r: 40 });
-  const home = makeIsland(homeCenter, 40, 5, true, rand);
-  home.name = names[0] || 'BASE';
-  islands.push(home);
-
-  for (let i = 1; i < islandCount; i++) {
-    const r = 18 + rand() * 26;
-    const c = placeIsland(r);
-    const is = makeIsland(c, r, 3 + rand() * 6, false, rand);
-    is.name = names[i] || `ISLAND-${i}`;
+  for (const d of ISLAND_DATA) {
+    const x = (d.col - (GRID_W - 1) / 2) / (GRID_W - 1) * WORLD_SIZE * 0.9;
+    const z = (d.row - (GRID_H - 1) / 2) / (GRID_H - 1) * WORLD_SIZE * 0.9;
+    const center = new THREE.Vector3(x, 0, z);
+    const isHome = (d.name === 'BASE');
+    // Size derived from the ROM's width/height hints, with a per-island
+    // "shape" flavor from the 2-byte shape code (controls roundness).
+    const radius = 14 + Math.max(d.wHint, d.hHint) * 0.8 + (isHome ? 6 : 0);
+    const height = 3 + (d.shape[1] * 1.5) + (isHome ? 2 : 0);
+    const is = makeIsland(center, radius, height, isHome, rand, d.shape);
+    is.name = d.name;
+    is.col = d.col; is.row = d.row;
     islands.push(is);
   }
-
   for (const is of islands) group.add(is.mesh);
 
-  // -------- Clouds (sprites) ------------------------------------------
+  // -------- Clouds --------------------------------------------------
   const clouds = [];
   for (let i = 0; i < 14; i++) {
     const s = 28 + rand() * 46;
@@ -103,9 +85,9 @@ export function createWorld({ worldSize = 600, islandCount = 9, seed = 1, names 
     });
     const cl = new THREE.Mesh(g, m);
     cl.position.set(
-      (rand()*2-1) * worldSize * 0.6,
+      (rand()*2-1) * WORLD_SIZE * 0.6,
       110 + rand() * 60,
-      (rand()*2-1) * worldSize * 0.6,
+      (rand()*2-1) * WORLD_SIZE * 0.6,
     );
     cl.scale.set(1.6 + rand()*1.2, 0.6 + rand()*0.3, 1 + rand()*1.0);
     cl.userData.drift = 2 + rand() * 3;
@@ -125,72 +107,82 @@ export function createWorld({ worldSize = 600, islandCount = 9, seed = 1, names 
 
     for (const cl of clouds) {
       cl.position.x += cl.userData.drift * dt;
-      if (cl.position.x > worldSize * 0.7) cl.position.x = -worldSize * 0.7;
+      if (cl.position.x > WORLD_SIZE * 0.7) cl.position.x = -WORLD_SIZE * 0.7;
     }
   }
 
-  return { group, islands, update };
+  return { group, islands, update, gridToWorld, worldSize: WORLD_SIZE };
 }
 
-function makeIsland(center, radius, height, isHome, rand) {
+export function gridToWorld(col, row) {
+  const x = (col - (GRID_W - 1) / 2) / (GRID_W - 1) * WORLD_SIZE * 0.9;
+  const z = (row - (GRID_H - 1) / 2) / (GRID_H - 1) * WORLD_SIZE * 0.9;
+  return { x, z };
+}
+
+
+function makeIsland(center, radius, height, isHome, rand, shape) {
   const grp = new THREE.Group();
   grp.position.copy(center);
 
-  // Underwater base (fades beneath surface)
-  const baseGeo = new THREE.ConeGeometry(radius * 1.4, height + 12, 24, 1, false);
-  baseGeo.translate(0, -(height + 12) / 2 + height, 0);
+  // Underwater base
+  const baseGeo = new THREE.ConeGeometry(radius * 1.4, height + 14, 24, 1, false);
+  baseGeo.translate(0, -(height + 14) / 2 + height, 0);
   const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a5a80, roughness: 1 });
   grp.add(new THREE.Mesh(baseGeo, baseMat));
 
   // Sandy beach band
-  const beachGeo = new THREE.CylinderGeometry(radius * 1.05, radius * 1.15, 0.8, 28);
+  const beachGeo = new THREE.CylinderGeometry(radius * 1.05, radius * 1.15, 0.8, 32);
   beachGeo.translate(0, 0.4, 0);
   const beachMat = new THREE.MeshStandardMaterial({ color: 0xe8d9a8, roughness: 1 });
   grp.add(new THREE.Mesh(beachGeo, beachMat));
 
-  // Main island body — irregular top
-  const bodyGeo = new THREE.CylinderGeometry(radius * 0.92, radius * 1.05, height, 28, 4);
+  // Main island body with some randomised bumps.  Shape codes:
+  //   (2,x) -> tall peak (PEAK, BANANA)
+  //   (1,x) -> medium
+  //   (0,x) -> low / flat
+  const peakBoost = shape[0] === 2 ? 1.6 : (shape[0] === 1 ? 1.0 : 0.5);
+  const bodyH = height * peakBoost;
+  const bodyGeo = new THREE.CylinderGeometry(radius * 0.92, radius * 1.05, bodyH, 28, 4);
   const vp = bodyGeo.attributes.position;
   for (let i = 0; i < vp.count; i++) {
     const y = vp.getY(i);
-    if (y > height * 0.3) {
+    if (y > bodyH * 0.3) {
       vp.setX(i, vp.getX(i) * (0.92 + rand() * 0.12));
       vp.setZ(i, vp.getZ(i) * (0.92 + rand() * 0.12));
-      vp.setY(i, y + (rand() - 0.3) * 1.2);
+      vp.setY(i, y + (rand() - 0.3) * 1.5);
     }
   }
   bodyGeo.computeVertexNormals();
-  bodyGeo.translate(0, height / 2 + 0.4, 0);
+  bodyGeo.translate(0, bodyH / 2 + 0.4, 0);
   const bodyMat = new THREE.MeshStandardMaterial({
     color: isHome ? 0x4f9a54 : 0x4a8a47,
     roughness: 0.95, flatShading: true,
   });
-  grp.add(new THREE.Mesh(bodyGeo, bodyMat));
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  grp.add(body);
 
-  // Palm trees
   const palmCount = Math.floor(2 + rand() * 5);
   for (let i = 0; i < palmCount; i++) {
     const palm = makePalm(rand);
     const a = rand() * Math.PI * 2;
     const r = rand() * radius * 0.75;
-    palm.position.set(Math.cos(a) * r, height + 0.4, Math.sin(a) * r);
+    palm.position.set(Math.cos(a) * r, bodyH + 0.4, Math.sin(a) * r);
     grp.add(palm);
   }
-
-  // Little rocks
   for (let i = 0; i < 3 + Math.floor(rand()*3); i++) {
     const rockGeo = new THREE.DodecahedronGeometry(0.6 + rand() * 1.1, 0);
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x777266, flatShading: true, roughness: 1 });
     const rock = new THREE.Mesh(rockGeo, rockMat);
     const a = rand() * Math.PI * 2;
     const r = rand() * radius * 0.85;
-    rock.position.set(Math.cos(a)*r, height + 0.3, Math.sin(a)*r);
+    rock.position.set(Math.cos(a)*r, bodyH + 0.3, Math.sin(a)*r);
     rock.rotation.set(rand()*2, rand()*2, rand()*2);
     grp.add(rock);
   }
 
-  const topCenter = new THREE.Vector3(center.x, height + 0.8, center.z);
-  return { mesh: grp, center: center.clone(), radius, height, topCenter, isHome };
+  const topCenter = new THREE.Vector3(center.x, bodyH + 0.8, center.z);
+  return { mesh: grp, center: center.clone(), radius, height: bodyH, topCenter, isHome };
 }
 
 function makePalm(rand) {
