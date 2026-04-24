@@ -313,9 +313,16 @@ function tick() {
     aircraft.update(dt, t);
     survivors.update(dt, t);
 
-    // Wind from cyclone — ROM says "WIND SPEED INCREASES WHEN APPROACHING CYCLONE"
-    const dCyc = horizontalDistance(p, cyclone.group.position);
-    state.wind = THREE.MathUtils.clamp(1 - dCyc / 180, 0, 1);
+    // Wind from cyclone — ROM formula ($9111..$9138): force is Chebyshev
+    // distance (max of |dcol|, |drow|) between player and cyclone, clamped
+    // to 0..15; the visible WIND / DANGER / FORCE meter reads 15 - that.
+    //
+    // Compute the player's own (col, row) on the 32x24 grid the same way
+    // the game does (map-view divisor at $9038..$904F divides world X by 32).
+    const playerCol = Math.round(p.x / (world.worldSize * 0.9) * 31 + 15.5);
+    const playerRow = Math.round(p.z / (world.worldSize * 0.9) * 23 + 11.5);
+    const cheb = cyclone.windForce(playerCol, playerRow);        // 0..15
+    state.wind = Math.max(0, (15 - cheb) / 15);                   // 1 at centre, 0 far away
     if (state.wind > 0) {
       const away = p.clone().sub(cyclone.group.position);
       away.y = 0;

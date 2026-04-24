@@ -1,25 +1,34 @@
 import * as THREE from 'three';
 import { ISLAND_DATA } from './islands_data.js';
 
-// Cyclone — modelled after the ROM's behaviour:
+// Cyclone — movement mirrors the ROM behaviour we have confirmed by
+// disassembly:
 //
-//   * The ROM's cyclone moves slowly and predictably at the same 50 Hz
-//     vsync tick the helicopter uses, one small step per tick.  Reverse
-//     engineering the exact pattern requires tracing the game's entity
-//     scheduler at $87F0, which walks a list of sprite records starting
-//     at $E740.  Instead of porting every entity the scheduler manages,
-//     we match the cyclone's observed gameplay behaviour exactly:
+//   * State vars at $754B (col) and $754C (row) on the 32x24 grid.
+//     Disassembly of the init routine at $8378..$838B shows:
 //
-//       - speed: slow sweep that takes ~2-3 minutes to cross the map
-//       - path:  deterministic tour through the archipelago so every
-//                island is threatened (figure-8 through key waypoints)
-//       - tick:  50 Hz fixed-step accumulator, so pacing is independent
-//                of browser frame rate
+//         CALL $8B74                  ; ROM rand into HL, bits of L read below
+//         LD   A,$02
+//         BIT  0,L  ;  JR Z,..  ; LD A,$14    -> col = $02 or $14
+//         LD   ($754B),A
+//         LD   A,$02
+//         BIT  1,L  ;  JR Z,..  ; LD A,$13    -> row = $02 or $13
+//         LD   ($754C),A
 //
-//   * The wind radius and crate-destruction are applied by main.js from
-//     the cyclone's public position, matching the ROM's gameplay loop
-//     ("WIND SPEED INCREASES WHEN APPROACHING CYCLONE", "COLLISION
-//     WARNING", "CRATES LEFT" decreasing when the cyclone sweeps over).
+//     So the ROM spawns the cyclone in one of FOUR map corners each
+//     game: (2, 2), (20, 2), (2, 19), (20, 19).  We do the same.
+//
+//   * Wind-force at $7550 is the Chebyshev distance (max of |dcol|,
+//     |drow|) between player ($7540/$7541) and cyclone ($754B/$754C),
+//     clamped to 0..15 (see $9111..$9138).  That drives the WIND /
+//     DANGER / FORCE meter and the crate-destruction trigger.
+//
+// The inter-cell drift *pattern* still uses a waypoint tour below —
+// porting the ROM's entity-scheduler at $87F0 (which walks the entity
+// list starting at $E740) is a bigger RE job.  Pacing is tuned to the
+// ROM's observed sweep time.
+//
+// Exports: CYCLONE_SPAWNS and CYCLONE_GRID are consumed by main.js.
 
 const TICK_HZ = 50;
 const TICK_DT = 1 / TICK_HZ;
@@ -27,6 +36,14 @@ const TICK_DT = 1 / TICK_HZ;
 // ROM position units per tick.  Helicopter moves 1 unit / tick at max,
 // so the cyclone at ~0.12 unit / tick is about 1/8 helicopter speed.
 const CYCLONE_STEP = 0.12;
+
+export const CYCLONE_GRID = { W: 32, H: 24 };
+
+// Four corner spawn positions, recovered from $8378..$838B
+export const CYCLONE_SPAWNS = [
+  { col:  2, row:  2 }, { col: 20, row:  2 },
+  { col:  2, row: 19 }, { col: 20, row: 19 },
+];
 
 // Build a waypoint tour through the archipelago.  We pick a fixed order
 // chosen to visit the outer ring first, then spiral inward, producing a
@@ -143,11 +160,39 @@ export function createCyclone(worldSize = 600) {
     const w = gridToWorld(t.col, t.row);
     target.set(w.x, 0, w.z);
   }
-  setTargetFromTour();
 
-  // Start position: far NE corner (same convention as the ROM, which
-  // starts the cyclone off-map and drifts it in).
-  group.position.set(worldSize * 0.35, 0, -worldSize * 0.35);
+  // ROM spawn (see $8378..$838B): pick one of the four map corners.
+  const spawn = CYCLONE_SPAWNS[Math.floor(Math.random() * CYCLONE_SPAWNS.length)];
+  {
+    const w = gridToWorld(spawn.col, spawn.row);
+    group.position.set(w.x, 0, w.z);
+  }
+  // Aim tour at the nearest waypoint not in the spawn corner so the first
+  // move is toward the map centre rather than snapping back across the grid.
+  {
+    let bestI = 0, bestD = Infinity;
+    for (let i = 0; i < tour.length; i++) {
+      const w = tour[i];
+      const dc = (w.col - spawn.col), dr = (w.row - spawn.row);
+      const d = dc*dc + dr*dr;
+      if (d > 0 && d < bestD) { bestD = d; bestI = i; }
+    }
+    tourIndex = bestI;
+    setTargetFromTour();
+  }
+
+  // Read-only grid position exposed to main.js for the ROM's Chebyshev
+  // wind formula ($9111..$9138).
+  const gridPos = { col: spawn.col, row: spawn.row };
+  function updateGridPos() {
+    // Invert gridToWorld
+    const cx = group.position.x;
+    const cz = group.position.z;
+    const col = Math.round(cx / (worldSize * 0.9) * (GRID_W - 1) + (GRID_W - 1) / 2);
+    const row = Math.round(cz / (worldSize * 0.9) * (GRID_H - 1) + (GRID_H - 1) / 2);
+    gridPos.col = Math.max(0, Math.min(GRID_W - 1, col));
+    gridPos.row = Math.max(0, Math.min(GRID_H - 1, row));
+  }
 
   // --------- fixed-step update ----------------------------------------
   let tickAcc = 0;
@@ -178,12 +223,24 @@ export function createCyclone(worldSize = 600) {
       tickAcc -= TICK_DT;
       guard++;
     }
+    updateGridPos();
+  }
+
+  // ROM wind formula at $9111..$9138: max(|dcol|, |drow|) clamped to 0..15.
+  function windForce(playerCol, playerRow) {
+    const dc = Math.abs(gridPos.col - playerCol);
+    const dr = Math.abs(gridPos.row - playerRow);
+    const d = Math.max(dc, dr);
+    return Math.min(15, d);
   }
 
   return {
     group, update,
     radius: RADIUS,
     get position() { return group.position; },
+    get gridPos() { return gridPos; },
+    windForce,
+    spawn,
     // Expose for debugging / future tuning
     _tour: tour, get _target() { return target; },
   };
