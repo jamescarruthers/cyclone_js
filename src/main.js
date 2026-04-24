@@ -5,6 +5,7 @@ import { createCyclone } from './cyclone.js';
 import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
 import { createMapView, createCompass } from './mapview.js';
+import { sound } from './sound.js';
 
 // -----------------------------------------------------------------------
 // Tunables — rough analogues of the constants the original reads out of
@@ -150,6 +151,13 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyC') state.cameraMode = (state.cameraMode + 1) % 4;
   if (e.code === 'KeyM') mapView.toggle();
   if (e.code === 'KeyP') state.paused = !state.paused;
+  if (e.code === 'KeyN') {
+    state.muted = !state.muted;
+    sound.setEnabled(!state.muted);
+    if (state.muted) { sound.rotorStop(); sound.windSet(0); }
+    else if (state.running) { sound.rotorStart(); }
+    setStatus(state.muted ? 'Sound muted (press N to unmute)' : 'Sound on');
+  }
   if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
 }, { passive: false });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -165,6 +173,8 @@ function startMission() {
   overlay.style.display = 'none';
   state.running = true;
   clock.start();
+  sound.resume();
+  sound.rotorStart();
 }
 
 function endMission(won, reasonTitle, reasonSub, reasonBody) {
@@ -175,6 +185,9 @@ function endMission(won, reasonTitle, reasonSub, reasonBody) {
   endTitle.textContent = reasonTitle;
   endSub.textContent = reasonSub;
   endBody.innerHTML = reasonBody + `<br/><br/>FINAL SCORE <b>${state.score}</b>`;
+  sound.rotorStop();
+  sound.windSet(0);
+  if (won) sound.win(); else sound.gameOver();
 }
 
 function setStatus(msg, cls) {
@@ -184,11 +197,11 @@ function setStatus(msg, cls) {
 function loseLife(reason) {
   state.lives--;
   hud.lives.textContent = state.lives;
+  sound.crash();
   if (state.lives <= 0) {
     endMission(false, 'Game Over', reason, `Crates delivered: <b>${state.delivered}</b>.`);
     return;
   }
-  // Respawn over BASE with full fuel, briefly invulnerable (simple)
   setStatus(`${reason} — ${state.lives} ${state.lives === 1 ? 'life' : 'lives'} left.`, 'warn');
   helicopter.group.position.copy(home.topCenter);
   helicopter.group.position.y += 20;
@@ -249,6 +262,7 @@ function tick() {
     if (state.fuel <= 0 && !state.noFuel) {
       state.noFuel = true;
       setStatus('NO FUEL — auto-descending!', 'warn');
+      sound.noFuel();
     }
     // If out of fuel, force descent by overriding lift to 0 (let gravity pull us down)
     const effectiveCtrl = state.noFuel
@@ -322,6 +336,7 @@ function tick() {
         state.carried++;
         scene.remove(c);
         setStatus(`Crate secured (${state.carried}/${state.carryCap}). Back to BASE.`, 'good');
+        sound.pickup();
       }
     }
     hud.carried.textContent = state.carried;
@@ -340,6 +355,7 @@ function tick() {
         survivors.group.remove(s);
         state.score += SCORE_SURVIVOR;
         setStatus(`Survivor rescued! +${SCORE_SURVIVOR}`, 'good');
+        sound.rescue();
       }
     }
 
@@ -354,6 +370,7 @@ function tick() {
         hud.delivered.textContent = state.delivered;
         hud.carried.textContent = 0;
         setStatus(`Delivered! ${state.delivered}/${MISSION_CRATES} total.`, 'good');
+        sound.deliver();
       }
       // Refuel on the pad (slow trickle)
       state.fuel = Math.min(100, state.fuel + 30 * dt);
@@ -413,6 +430,27 @@ function tick() {
     if (state.wind > 0.4) setStatus('CYCLONE NEARBY — wind force rising!', 'warn');
     else if (state.fuel < 15 && !state.noFuel) setStatus('FUEL LOW — return to BASE!', 'warn');
     else if (state.remaining < 30) setStatus('TIME CRITICAL!', 'warn');
+
+    // Continuous sounds
+    sound.windSet(state.wind);
+    // Rotor pitch tracks collective effort
+    const throttle = Math.max(
+      Math.abs(ctrl.pitch), Math.abs(ctrl.roll), Math.abs(ctrl.yaw), Math.abs(ctrl.lift)
+    );
+    sound.rotorSet(throttle);
+
+    // Low-fuel warning chirp (every ~2s)
+    if (state.fuel > 0 && state.fuel < 20) {
+      if (!state.lastLowFuel || state.time - state.lastLowFuel > 2) {
+        state.lastLowFuel = state.time; sound.lowFuel();
+      }
+    }
+    // Edge-warning chirp
+    if (beyond > 0) {
+      if (!state.lastEdge || state.time - state.lastEdge > 2) {
+        state.lastEdge = state.time; sound.leave();
+      }
+    }
   }
 
   // Camera
