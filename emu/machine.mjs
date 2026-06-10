@@ -127,6 +127,17 @@ export function createMachine({
       buttons:   peek(0x7522),
       thrust:    peek(0x7527),
       latchedHeading: peek(0x753B),
+      // Cyclone / wind system
+      heliCellX: peek(0x7540),
+      heliCellY: peek(0x7541),
+      cycloneX:  peek(0x754B),
+      cycloneY:  peek(0x754C),
+      cycMovePrescaler: peek(0x754E),
+      cycRegimeCounter: peek(0x754F),
+      cycRegimeAnd: peek(0x90D0),   // self-modified operand
+      cycRegimeOr:  peek(0x90D2),   // self-modified operand
+      cycloneDist: peek(0x7550),
+      seed: word(0x5C76),           // PRNG state
     };
   }
 

@@ -6,6 +6,8 @@ import {
   fuelTick, timerTick, landRom,
   fuelStepsRemaining, FUEL_STEPS_FULL,
   timerStepsRemaining, TIMER_STEPS_FULL,
+  prngNext, createCycloneState, cycloneTick,
+  mapCell, cycloneDistance, windCorrupt,
 } from './rom-physics.js';
 
 // ============================================================================
@@ -23,12 +25,21 @@ import {
 //     fractional accumulator so ROM state stays integer-exact;
 //   * interpolation/visual smoothing between the coarse 10 Hz ticks.
 //
-// ROM positions are unsigned 16-bit; the world maps them signed around the
-// origin at ROM_SCALE world units per ROM unit.
+// ROM positions are unsigned 16-bit in the authentic 0..704 map space
+// (22 x 21 cells of 32 units, cell = pos >> 5).  The world maps that
+// space around its centre (ROM 352) at ROM_SCALE world units per ROM
+// unit, so the map-cell arithmetic — and with it the cyclone distance
+// and "leaving map" logic — works on real coordinates.
 
 const ROM_SCALE  = 0.8;            // world units per ROM position unit
+const ROM_CENTER = 352;            // ROM coordinate at world origin
 const ALT_SCALE  = ROM_SCALE * 0.8;
 const toSigned16 = (v) => (v << 16) >> 16;
+const romToWorld = (v) => (toSigned16(v) - ROM_CENTER) * ROM_SCALE;
+const worldToRom = (w) => (Math.round(w / ROM_SCALE) + ROM_CENTER) & 0xFFFF;
+
+export const CELL_SIZE_WORLD = 32 * ROM_SCALE;
+export const cellToWorld = (c) => (c * 32 + 16 - ROM_CENTER) * ROM_SCALE;
 
 export function createHelicopter() {
   const group = new THREE.Group();   // world transform (yaw here)
@@ -106,10 +117,22 @@ export function createHelicopter() {
   // Exposed Cartesian velocity (world units / sec), derived from the ROM
   // movement — read-only for consumers (HUD speed).
   const velocity = new THREE.Vector3();
-  // External pushes (cyclone wind, world units/sec) accumulate here and
-  // are folded into the integer ROM position once per tick.
-  const wind = new THREE.Vector3();
-  const windFrac = { x: 0, y: 0 };   // sub-unit remainder in ROM units
+
+  // --- The cyclone & wind system ($8370 init, $9038-$9176, $7378) -----
+  // PRNG seed: the original inherits whatever the spare sysvar held;
+  // we roll a fresh 16-bit seed per session.
+  const prng = { seed: (Math.random() * 0x10000) | 0 };
+  const cyclone = {
+    ...createCycloneState(prng),
+    dist: 15,            // $7550
+    heliCellX: 0,        // $7540
+    heliCellY: 0,        // $7541
+    offMap: false,       // $754D analogue
+  };
+  // Buttons consumed by the NEXT physics tick — written by the input
+  // read + wind corruption at the END of each iteration, exactly like
+  // $7522 in the original loop ($5B8C/$5B8F run after physics $5B36).
+  let pendingButtons = 0;
 
   // ----- Per-frame driver -----------------------------------------
   // Returns per-frame events: { refuelBlip, timeUp } from the authentic
@@ -127,42 +150,42 @@ export function createHelicopter() {
     if (ctrl.lift > 0) buttons |= BTN_UP;
     if (ctrl.lift < 0) buttons |= BTN_DOWN;
 
-    // Advance simulation in fixed main-loop-cadence steps (~10 Hz).
+    // Advance simulation in fixed main-loop-cadence steps (~10 Hz),
+    // in the original's iteration order: physics consumes the buttons
+    // read (and wind-corrupted) at the end of the previous iteration.
     tickAcc += dt;
     while (tickAcc >= TICK_SECONDS) {
-      prev.x = toSigned16(rom.posX); prev.y = rom.altitude; prev.z = toSigned16(rom.posY);
+      prev.x = romToWorld(rom.posX); prev.y = rom.altitude; prev.z = romToWorld(rom.posY);
       const beforeX = rom.posX, beforeY = rom.posY;
-      romTick(rom, buttons);
-      if (fuelTick(rom)) events.refuelBlip = true;
-      if (timerTick(rom)) events.timeUp = true;
+      romTick(rom, pendingButtons);                  // $5B36 / $80F9
+      if (fuelTick(rom)) events.refuelBlip = true;   // $82A7 / $8478
+      if (timerTick(rom)) events.timeUp = true;      // $8284
       lastDx = toSigned16((rom.posX - beforeX) & 0xFFFF);
       lastDy = toSigned16((rom.posY - beforeY) & 0xFFFF);
 
-      // Fold wind into the integer ROM position: accumulate fractional
-      // ROM units, apply whole units only.  No wind while landed —
-      // the ROM freezes position entirely on the ground.
-      if (!rom.landed) {
-        windFrac.x += wind.x * TICK_SECONDS / ROM_SCALE;
-        windFrac.y += wind.z * TICK_SECONDS / ROM_SCALE;
-        const wx = Math.trunc(windFrac.x), wy = Math.trunc(windFrac.y);
-        windFrac.x -= wx; windFrac.y -= wy;
-        rom.posX = (rom.posX + wx) & 0xFFFF;
-        rom.posY = (rom.posY + wy) & 0xFFFF;
-      }
+      // Cyclone routine ($9038 cells -> $909E walk -> $9111 distance)
+      const cx = mapCell(rom.posX), cy = mapCell(rom.posY);
+      cyclone.heliCellX = cx.cell; cyclone.heliCellY = cy.cell;
+      cyclone.offMap = cx.offMap || cy.offMap;
+      cycloneTick(cyclone, prng);
+      cyclone.dist = cycloneDistance(cyclone, cx.cell, cy.cell);
 
-      // Drag on the wind impulse, applied per tick.
-      wind.multiplyScalar(0.66);
+      // Input read + wind corruption ($5B8C / $5B8F + $7378): determines
+      // what the NEXT tick's physics will see.
+      pendingButtons = (cyclone.dist < 5)
+        ? windCorrupt(rom, cyclone.dist, buttons, prng)
+        : buttons;
 
       tickAcc -= TICK_SECONDS;
     }
 
     // --- Interpolation for smooth rendering between ticks -----------
     const alpha = THREE.MathUtils.clamp(tickAcc / TICK_SECONDS, 0, 1);
-    const sx = toSigned16(rom.posX), sz = toSigned16(rom.posY);
+    const sx = romToWorld(rom.posX), sz = romToWorld(rom.posY);
     const ix = prev.x + (sx - prev.x) * alpha;
     const iy = prev.y + (rom.altitude - prev.y) * alpha;
     const iz = prev.z + (sz - prev.z) * alpha;
-    group.position.set(ix * ROM_SCALE, iy * ALT_SCALE, iz * ROM_SCALE);
+    group.position.set(ix, iy * ALT_SCALE, iz);
 
     // --- Visual heading smoothing ------------------------------------
     // rom.heading is the ROM's 16-value compass (even values only);
@@ -196,19 +219,24 @@ export function createHelicopter() {
   // units.  Pass { landed: true } to spawn on the ground (refuelling, as
   // the original starts on the BASE pad).
   function setWorldPosition(v, { landed = false } = {}) {
-    rom.posX = Math.round(v.x / ROM_SCALE) & 0xFFFF;
-    rom.posY = Math.round(v.z / ROM_SCALE) & 0xFFFF;
+    rom.posX = worldToRom(v.x);
+    rom.posY = worldToRom(v.z);
     rom.altitude = Math.round(THREE.MathUtils.clamp(v.y / ALT_SCALE, 0, ALT_CAP));
     rom.landed = landed ? 1 : 0;
     rom.refueling = landed ? 1 : 0;
     rom.hitGround = 0;
     group.position.set(
-      toSigned16(rom.posX) * ROM_SCALE,
+      romToWorld(rom.posX),
       rom.altitude * ALT_SCALE,
-      toSigned16(rom.posY) * ROM_SCALE,
+      romToWorld(rom.posY),
     );
-    prev.x = toSigned16(rom.posX); prev.z = toSigned16(rom.posY); prev.y = rom.altitude;
+    prev.x = romToWorld(rom.posX); prev.z = romToWorld(rom.posY); prev.y = rom.altitude;
     lastDx = 0; lastDy = 0;
+    // Refresh the cyclone-system view of where we are.
+    const cx = mapCell(rom.posX), cy = mapCell(rom.posY);
+    cyclone.heliCellX = cx.cell; cyclone.heliCellY = cy.cell;
+    cyclone.offMap = cx.offMap || cy.offMap;
+    cyclone.dist = cycloneDistance(cyclone, cx.cell, cy.cell);
   }
 
   // Touch down at the current position (ROM landing commit, $8AEB-$8B0D).
@@ -227,11 +255,12 @@ export function createHelicopter() {
     timerStepsRemaining(rom.timerGauge) * 255 * TICK_SECONDS
     + (255 - rom.timerPrescaler) * TICK_SECONDS;
 
+  // Note: reset() restores the helicopter template ($5B1B) but the
+  // cyclone keeps wandering across lives, as in the original.
   function reset() {
     Object.assign(rom, createRomState());
     velocity.set(0, 0, 0);
-    wind.set(0, 0, 0);
-    windFrac.x = 0; windFrac.y = 0;
+    pendingButtons = 0;
     visual.yaw = -rom.heading * (Math.PI / 8);
     body.rotation.set(0, 0, 0);
     tickAcc = 0;
@@ -241,7 +270,7 @@ export function createHelicopter() {
   reset();
 
   return {
-    group, body, update, velocity, wind,
+    group, body, update, velocity, cyclone,
     setWorldPosition, land, reset, rom, ROM_SCALE,
     fuelFraction, timeLeftSeconds,
   };

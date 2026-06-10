@@ -34,6 +34,9 @@ export const TRACE_FIELDS = [
   'posX', 'posY', 'heading', 'altitude', 'thrust', 'turnDelay',
   'pend1', 'pend2', 'rampUp', 'rampDn', 'landed', 'noFuel',
   'buttons', 'latchedHeading', 'fuel',
+  'heliCellX', 'heliCellY', 'cycloneX', 'cycloneY',
+  'cycMovePrescaler', 'cycRegimeCounter', 'cycRegimeAnd', 'cycRegimeOr',
+  'cycloneDist', 'seed',
 ];
 
 export function runScript(script) {

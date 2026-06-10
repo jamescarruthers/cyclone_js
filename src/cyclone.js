@@ -1,47 +1,13 @@
 import * as THREE from 'three';
-import { ISLAND_DATA } from './islands_data.js';
 
-// Cyclone — modelled after the ROM's behaviour:
-//
-//   * The ROM's cyclone moves slowly and predictably at the same 50 Hz
-//     vsync tick the helicopter uses, one small step per tick.  Reverse
-//     engineering the exact pattern requires tracing the game's entity
-//     scheduler at $87F0, which walks a list of sprite records starting
-//     at $E740.  Instead of porting every entity the scheduler manages,
-//     we match the cyclone's observed gameplay behaviour exactly:
-//
-//       - speed: slow sweep that takes ~2-3 minutes to cross the map
-//       - path:  deterministic tour through the archipelago so every
-//                island is threatened (figure-8 through key waypoints)
-//       - tick:  50 Hz fixed-step accumulator, so pacing is independent
-//                of browser frame rate
-//
-//   * The wind radius and crate-destruction are applied by main.js from
-//     the cyclone's public position, matching the ROM's gameplay loop
-//     ("WIND SPEED INCREASES WHEN APPROACHING CYCLONE", "COLLISION
-//     WARNING", "CRATES LEFT" decreasing when the cyclone sweeps over).
-
-const TICK_HZ = 50;
-const TICK_DT = 1 / TICK_HZ;
-
-// ROM position units per tick.  Helicopter moves 1 unit / tick at max,
-// so the cyclone at ~0.12 unit / tick is about 1/8 helicopter speed.
-const CYCLONE_STEP = 0.12;
-
-// Build a waypoint tour through the archipelago.  We pick a fixed order
-// chosen to visit the outer ring first, then spiral inward, producing a
-// predictable but threatening sweep.
-function buildTour() {
-  // Order to visit, selected so adjacent waypoints are roughly reachable
-  // without hopping back and forth — approximates the ROM's smooth drift.
-  const order = [
-    'PEAK', 'BONE', 'BANANA', 'CLAW', 'RED', 'ORTE ROCKS',
-    'LUKELAND ISLES', 'SKEG', 'ENTERPRISE', 'BASE',
-    'LAGOON', 'GILLIGANS', 'KOKOLA', 'GIANTS GATEWAY',
-  ];
-  const byName = Object.fromEntries(ISLAND_DATA.map(d => [d.name, d]));
-  return order.map(n => byName[n]).filter(Boolean);
-}
+// Cyclone visuals.  The cyclone's POSITION is no longer invented: it is
+// driven by the instruction-exact random walk ported from the ROM
+// ($909E, trace-verified — see src/rom-physics.js), which lives inside
+// the helicopter's tick so it shares the authentic main-loop cadence
+// and PRNG.  main.js feeds the resulting map-cell position in here via
+// setWorldTarget(); this module only renders the funnel and glides it
+// smoothly between the discrete cells (the original moves one cell
+// every ~2.5 s).
 
 
 export function createCyclone(worldSize = 600) {
@@ -127,64 +93,31 @@ export function createCyclone(worldSize = 600) {
   }));
   group.add(funnel);
 
-  // --------- tour state ------------------------------------------------
-  const GRID_W = 32, GRID_H = 24;
-  function gridToWorld(col, row) {
-    return {
-      x: (col - (GRID_W - 1) / 2) / (GRID_W - 1) * worldSize * 0.9,
-      z: (row - (GRID_H - 1) / 2) / (GRID_H - 1) * worldSize * 0.9,
-    };
-  }
-  const tour = buildTour();
-  let tourIndex = 0;
+  // --------- authentic-position target ---------------------------------
+  // main.js sets this from the ROM cyclone's map cell each frame; the
+  // funnel glides toward it (one cell every ~2.5 s in the original, so a
+  // ~1.5 s glide reads as continuous motion).
   const target = new THREE.Vector3();
-  function setTargetFromTour() {
-    const t = tour[tourIndex];
-    const w = gridToWorld(t.col, t.row);
-    target.set(w.x, 0, w.z);
-  }
-  setTargetFromTour();
-
-  // Start position: far NE corner (same convention as the ROM, which
-  // starts the cyclone off-map and drifts it in).
-  group.position.set(worldSize * 0.35, 0, -worldSize * 0.35);
-
-  // --------- fixed-step update ----------------------------------------
-  let tickAcc = 0;
-  const dir = new THREE.Vector3();
-  function oneTick() {
-    dir.copy(target).sub(group.position);
-    dir.y = 0;
-    const d = dir.length();
-    if (d < 6) {
-      // arrived at this waypoint, advance
-      tourIndex = (tourIndex + 1) % tour.length;
-      setTargetFromTour();
-      return;
-    }
-    dir.multiplyScalar(CYCLONE_STEP / d);
-    group.position.add(dir);
+  let hasTarget = false;
+  function setWorldTarget(x, z) {
+    target.set(x, 0, z);
+    if (!hasTarget) { group.position.set(x, 0, z); hasTarget = true; }
   }
 
   function update(dt, t /*, world */) {
     mat.uniforms.uTime.value = t;
     points.rotation.y = t * 1.4;
     funnel.rotation.y = -t * 0.6;
-
-    tickAcc += dt;
-    let guard = 0;
-    while (tickAcc >= TICK_DT && guard < 6) {
-      oneTick();
-      tickAcc -= TICK_DT;
-      guard++;
+    if (hasTarget) {
+      const k = 1 - Math.pow(0.25, dt);   // ~1.5 s glide to the new cell
+      group.position.x += (target.x - group.position.x) * k;
+      group.position.z += (target.z - group.position.z) * k;
     }
   }
 
   return {
-    group, update,
+    group, update, setWorldTarget,
     radius: RADIUS,
     get position() { return group.position; },
-    // Expose for debugging / future tuning
-    _tour: tour, get _target() { return target; },
   };
 }

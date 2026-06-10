@@ -104,6 +104,133 @@ export function createRomState() {
 }
 
 // ---------------------------------------------------------------------------
+// The cyclone ($909E-$910E) and its wind ($9111-$9138 + $7378).
+//
+// The cyclone lives at a map cell ($754B/$754C; cell = position >> 5,
+// see $9038).  Once every 25 main-loop iterations (prescaler $754E,
+// CP $18) it random-walks: a "direction regime" — an (AND, OR) mask pair
+// patched into the operands at $90D0/$90D2 — is re-rolled from the table
+// at $9178 every 9th move ($754F), and each move picks a delta pair from
+// the table at $9198 with index (rand >> 8 & AND) | OR.  X is bounded to
+// [1, $15], Y to [1, $14]; a blocked axis doesn't move and forces a
+// regime re-roll on an immediate next attempt ($754F=8, $754E=$18).
+//
+// Wind is NOT a force: the main loop ($5B8F) computes the Chebyshev
+// distance between the helicopter's map cell and the cyclone ($7550,
+// clamped to 15) and, when it is < 5, $7378 CORRUPTS THE CONTROLS for
+// the next physics tick:
+//     dist 4   : buttons |= rand & $1A   (random DOWN/RIGHT/LEFT)
+//     dist 2-3 : buttons |= rand & $1B   (random FWD/DOWN/RIGHT/LEFT)
+//     dist 0-1 : buttons  = $12          (forced DOWN+LEFT, and any
+//                                         pending turn delay decrements)
+// Nothing happens while landed.  The randomness source is the 16-bit
+// PRNG at $8B74 over the spare sysvar $5C76.
+
+// $9178: 16 (AND, OR) regime pairs.
+export const CYCLONE_REGIMES = [
+  0x02, 0x00, 0x0A, 0x08, 0x0E, 0x06, 0x0E, 0x0C,
+  0x08, 0x00, 0x06, 0x00, 0x0A, 0x00, 0x0E, 0x04,
+  0x0E, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0A, 0x08,
+  0x0E, 0x0C, 0x06, 0x00, 0x0E, 0x08, 0x06, 0x04,
+];
+// $9198: (dx, dy) byte pairs at even indices (signed bytes).
+export const CYCLONE_DELTAS = [
+  0xFF, 0x00, 0xFF, 0xFF, 0x00, 0xFF, 0x01, 0xFF,
+  0xFF, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00,
+];
+
+// Exact port of the PRNG at $8B74: a borrow-chained shuffle of the
+// 16-bit seed at $5C76.  Mutates state.seed, returns the new 16 bits.
+export function prngNext(state) {
+  const de = state.seed & 0xFFFF;
+  let hl = ((de & 0xFF) << 8) | 0xFD;       // H=E, L=$FD
+  let a = de >> 8;                          // A=D
+  let carry = 0;                            // OR A
+  let t = hl - de;                          // SBC HL,DE
+  carry = t < 0 ? 1 : 0; hl = t & 0xFFFF;
+  t = a - carry;                            // SBC A,$00
+  carry = t < 0 ? 1 : 0; a = t & 0xFF;
+  t = hl - de - carry;                      // SBC HL,DE
+  carry = t < 0 ? 1 : 0; hl = t & 0xFFFF;
+  t = a - carry;                            // SBC A,$00
+  carry = t < 0 ? 1 : 0; a = t & 0xFF;
+  t = hl - a - carry;                       // E=A; D=0; SBC HL,DE
+  carry = t < 0 ? 1 : 0; hl = t & 0xFFFF;
+  if (carry) hl = (hl + 1) & 0xFFFF;        // JR NC / INC HL
+  state.seed = hl;
+  return hl;
+}
+
+// Game start places the cyclone in a random corner ($8370): X = 2 or
+// $14 (20) by rand bit 0, Y = 2 or $13 (19) by rand bit 1.
+export function createCycloneState(prng) {
+  const r = prng ? prngNext(prng) : 0;
+  return {
+    x: (r & 1) ? 0x14 : 0x02,        // $7378-$8380
+    y: (r & 2) ? 0x13 : 0x02,        // $8383-$838B
+    movePrescaler: 0,                // $754E
+    regimeCounter: 0,                // $754F
+    regimeAnd: 0x0E,                 // operand patched at $90D0 (file default)
+    regimeOr: 0x06,                  // operand patched at $90D2 (file default)
+  };
+}
+
+// One per-iteration call of the movement section at $909E.
+export function cycloneTick(c, prng) {
+  c.movePrescaler = (c.movePrescaler + 1) & 0xFF;   // $90A1
+  if (c.movePrescaler <= 0x18) return;              // $90A2-$90A5
+  c.movePrescaler = 0;
+  c.regimeCounter = (c.regimeCounter + 1) & 0xFF;   // $90AC
+  if (c.regimeCounter > 0x08) {                     // $90AD-$90B0
+    c.regimeCounter = 0;
+    const r = prngNext(prng) & 0x0F;                // $90B7-$90B8
+    c.regimeAnd = CYCLONE_REGIMES[r * 2];
+    c.regimeOr  = CYCLONE_REGIMES[r * 2 + 1];
+  }
+  const idx = ((prngNext(prng) >> 8) & c.regimeAnd) | c.regimeOr;  // $90CB-$90D1
+  const nx = (c.x + CYCLONE_DELTAS[idx]) & 0xFF;    // $90D8-$90DC (8-bit add)
+  if (nx < 0x01 || nx >= 0x16) {                    // $90DD-$90E3
+    c.regimeCounter = 0x08; c.movePrescaler = 0x18; // $90EA-$90F1
+  } else {
+    c.x = nx;                                       // $90E5
+  }
+  const ny = (c.y + CYCLONE_DELTAS[idx + 1]) & 0xFF;
+  if (ny < 0x01 || ny >= 0x15) {                    // $90FA-$9100
+    c.regimeCounter = 0x08; c.movePrescaler = 0x18;
+  } else {
+    c.y = ny;                                       // $9102
+  }
+}
+
+// Map cell of a 16-bit ROM position ($9038): cell = pos >> 5, with
+// off-map markers 0 / $16 (the $754D "leaving map" mechanic).
+export function mapCell(pos) {
+  const hl = (pos & 0xFFFF) >> 5;
+  const h = hl >> 8, l = hl & 0xFF;
+  if (h !== 0) return { cell: h >= 0x80 ? 0x16 : 0x00, offMap: true };
+  if (l >= 0x17) return { cell: 0x16, offMap: true };
+  return { cell: l, offMap: false };
+}
+
+// Chebyshev distance, clamped to 15 ($9111-$9136 -> $7550).
+export function cycloneDistance(c, heliCellX, heliCellY) {
+  let dx = (c.x - heliCellX) & 0xFF; if (dx >= 0x80) dx = (-dx) & 0xFF;
+  let dy = (c.y - heliCellY) & 0xFF; if (dy >= 0x80) dy = (-dy) & 0xFF;
+  const d = Math.max(dx, dy);
+  return d >= 0x10 ? 0x0F : d;
+}
+
+// Control corruption ($7378), applied to the buttons byte that the NEXT
+// physics tick will consume.  Only call when distance < 5 ($5B8F).
+export function windCorrupt(rom, dist, buttons, prng) {
+  if (rom.landed === 1) return buttons;             // $7379-$737E
+  if (dist >= 4) return buttons | (prngNext(prng) & 0x1A);   // $7382-$7390
+  if (dist >= 2) return buttons | (prngNext(prng) & 0x1B);   // $7392-$73A0
+  if (rom.turnDelay !== 0) rom.turnDelay--;         // $73A2-$73A9
+  return 0x12;                                      // $73AA-$73AC
+}
+
+// ---------------------------------------------------------------------------
 // Fuel ($8470 dispatcher -> $8478 refuel / $82A7+$82B1 burn).
 //
 // The fuel "counter" is literally the screen address of the gauge's current

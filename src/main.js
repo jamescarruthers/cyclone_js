@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createWorld } from './world.js';
-import { createHelicopter } from './helicopter.js';
+import { createHelicopter, cellToWorld } from './helicopter.js';
 import { createCyclone } from './cyclone.js';
 import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
@@ -322,13 +322,14 @@ function tick() {
       const over = world.islands.find(is =>
         horizontalDistance(p, is.topCenter) < is.radius * 0.9);
       const groundY = over ? over.topCenter.y + 1.5 : 0;
+      const byCyclone = helicopter.cyclone.dist < 3 ? ' — the cyclone tore you down' : '';
       if (over && p.y < groundY - 2.5) {
-        loseLife('Flew into the terrain');
+        loseLife('Flew into the terrain' + byCyclone);
       } else if (helicopter.rom.hitGround === 1 && !over) {
-        loseLife('Ditched into the sea');
+        loseLife('Ditched into the sea' + byCyclone);
       } else if (p.y <= groundY + 0.1 && helicopter.rom.rampDn >= 1 && over) {
         if (helicopter.rom.rampDn >= 3) {
-          loseLife('Came down too fast');
+          loseLife('Came down too fast' + byCyclone);
         } else {
           helicopter.land({ refuelZone: true, groundY });
           setStatus(`Landed on ${over.name} — refuelling. Hold SPACE to take off.`,
@@ -344,18 +345,19 @@ function tick() {
     aircraft.update(dt, t);
     survivors.update(dt, t);
 
-    // Wind from cyclone — ROM says "WIND SPEED INCREASES WHEN APPROACHING CYCLONE"
+    // Cyclone — its position is the ROM random walk ($909E), ticked
+    // inside the helicopter at the authentic cadence.  The original's
+    // "wind" is CONTROL CORRUPTION (already applied in rom-physics:
+    // random fake button presses below Chebyshev distance 5, full
+    // override to DOWN+LEFT inside the core).  Here we drive the funnel
+    // visual and the HUD force gauge ($913C: force = 16 - distance).
+    cyclone.setWorldTarget(
+      cellToWorld(helicopter.cyclone.x),
+      cellToWorld(helicopter.cyclone.y),
+    );
     const dCyc = horizontalDistance(p, cyclone.group.position);
-    state.wind = THREE.MathUtils.clamp(1 - dCyc / 180, 0, 1);
-    if (state.wind > 0) {
-      const away = p.clone().sub(cyclone.group.position);
-      away.y = 0;
-      if (away.lengthSq() > 0) away.normalize();
-      const swirl = new THREE.Vector3(-away.z, 0, away.x);
-      const gust = state.wind * 7 * dt;
-      helicopter.wind.addScaledVector(away, gust * 0.6);
-      helicopter.wind.addScaledVector(swirl, gust);
-    }
+    const cycDist = helicopter.cyclone.dist;
+    state.wind = cycDist >= 15 ? 0 : (0x10 - cycDist) / 0x10;
 
     // Crate interactions
     let remaining = 0;
@@ -417,11 +419,9 @@ function tick() {
       sound.deliver();
     }
 
-    // Cyclone hit
-    if ((state.invulnUntil || 0) < state.time &&
-        dCyc < cyclone.radius * 0.85 && p.y < 60) {
-      loseLife('Caught by the cyclone');
-    }
+    // (No separate "cyclone hit" check: as in the original, the cyclone
+    // kills by forcing you down — the terrain-contact logic above turns
+    // that into a crash.)
 
     // Aircraft collision
     for (const plane of aircraft.planes) {
@@ -468,7 +468,8 @@ function tick() {
     hud.island.textContent = (near && nearD < near.radius * 2.5) ? near.name : '—';
 
     // Proximity warnings — overrides other status when close
-    if (state.wind > 0.4) setStatus('CYCLONE NEARBY — wind force rising!', 'warn');
+    if (cycDist < 5 && !helicopter.rom.landed) setStatus('CYCLONE — CONTROLS FAILING!', 'warn');
+    else if (cycDist < 8) setStatus('CYCLONE NEARBY — wind force rising!', 'warn');
     else if (fuelPct < 20 && !state.noFuel && !helicopter.rom.landed) setStatus('FUEL LOW — land to refuel!', 'warn');
     else if (state.remaining < 60) setStatus('TIME CRITICAL!', 'warn');
 

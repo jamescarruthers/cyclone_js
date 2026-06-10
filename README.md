@@ -108,6 +108,15 @@ and the timer (`$8284/$8292`) steps every 255 iterations giving a
 descent ramp of 3 crashes (`$8AB7`), gentler touchdowns land, arm
 refuelling and snap altitude to the 8-unit grid (`$8AEB-$8B0D`).
 
+So is the **cyclone** (`$8370/$909E-$9176/$7378`, trace-verified): it
+spawns in a random map corner, random-walks one cell per 25 iterations
+under "direction regimes" re-rolled every 9 moves (PRNG `$8B74`, ported
+byte-exact and A/B-tested against the emulator), and its famous wind is
+not a force at all &mdash; below Chebyshev distance 5 it **corrupts your
+controls** with random fake button presses, and inside the core it
+overrides them entirely with DOWN+LEFT.  The cyclone kills by flying
+you into the ground.
+
 ## File layout
 
 ```
