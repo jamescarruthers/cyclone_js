@@ -3,6 +3,9 @@ import {
   romTick, createRomState, VELOCITY_TABLE, TICK_SECONDS,
   BTN_FORWARD, BTN_DOWN, BTN_UP, BTN_RIGHT, BTN_LEFT,
   THRUST_CAP, ALT_CAP,
+  fuelTick, timerTick, landRom,
+  fuelStepsRemaining, FUEL_STEPS_FULL,
+  timerStepsRemaining, TIMER_STEPS_FULL,
 } from './rom-physics.js';
 
 // ============================================================================
@@ -109,8 +112,11 @@ export function createHelicopter() {
   const windFrac = { x: 0, y: 0 };   // sub-unit remainder in ROM units
 
   // ----- Per-frame driver -----------------------------------------
+  // Returns per-frame events: { refuelBlip, timeUp } from the authentic
+  // fuel/timer systems that tick alongside the physics.
   function update(dt, ctrl) {
-    mainRotor.rotation.y += dt * 38;
+    const events = { refuelBlip: false, timeUp: false };
+    mainRotor.rotation.y += dt * (rom.landed ? 14 : 38);
     tailRotor.rotation.x += dt * 55;
 
     // Translate inputs into the ROM's $7522 button byte.
@@ -127,17 +133,22 @@ export function createHelicopter() {
       prev.x = toSigned16(rom.posX); prev.y = rom.altitude; prev.z = toSigned16(rom.posY);
       const beforeX = rom.posX, beforeY = rom.posY;
       romTick(rom, buttons);
+      if (fuelTick(rom)) events.refuelBlip = true;
+      if (timerTick(rom)) events.timeUp = true;
       lastDx = toSigned16((rom.posX - beforeX) & 0xFFFF);
       lastDy = toSigned16((rom.posY - beforeY) & 0xFFFF);
 
       // Fold wind into the integer ROM position: accumulate fractional
-      // ROM units, apply whole units only.
-      windFrac.x += wind.x * TICK_SECONDS / ROM_SCALE;
-      windFrac.y += wind.z * TICK_SECONDS / ROM_SCALE;
-      const wx = Math.trunc(windFrac.x), wy = Math.trunc(windFrac.y);
-      windFrac.x -= wx; windFrac.y -= wy;
-      rom.posX = (rom.posX + wx) & 0xFFFF;
-      rom.posY = (rom.posY + wy) & 0xFFFF;
+      // ROM units, apply whole units only.  No wind while landed —
+      // the ROM freezes position entirely on the ground.
+      if (!rom.landed) {
+        windFrac.x += wind.x * TICK_SECONDS / ROM_SCALE;
+        windFrac.y += wind.z * TICK_SECONDS / ROM_SCALE;
+        const wx = Math.trunc(windFrac.x), wy = Math.trunc(windFrac.y);
+        windFrac.x -= wx; windFrac.y -= wy;
+        rom.posX = (rom.posX + wx) & 0xFFFF;
+        rom.posY = (rom.posY + wy) & 0xFFFF;
+      }
 
       // Drag on the wind impulse, applied per tick.
       wind.multiplyScalar(0.66);
@@ -177,15 +188,19 @@ export function createHelicopter() {
     // --- Expose speed (world units/sec) for the HUD -------------------
     const unitsPerSec = ROM_SCALE / TICK_SECONDS;
     velocity.set(lastDx * unitsPerSec, 0, lastDy * unitsPerSec);
+
+    return events;
   }
 
   // Place helicopter at a given world position by back-converting to ROM
-  // units.  Used for spawns/respawns — implies airborne.
-  function setWorldPosition(v) {
+  // units.  Pass { landed: true } to spawn on the ground (refuelling, as
+  // the original starts on the BASE pad).
+  function setWorldPosition(v, { landed = false } = {}) {
     rom.posX = Math.round(v.x / ROM_SCALE) & 0xFFFF;
     rom.posY = Math.round(v.z / ROM_SCALE) & 0xFFFF;
     rom.altitude = Math.round(THREE.MathUtils.clamp(v.y / ALT_SCALE, 0, ALT_CAP));
-    rom.landed = 0;
+    rom.landed = landed ? 1 : 0;
+    rom.refueling = landed ? 1 : 0;
     rom.hitGround = 0;
     group.position.set(
       toSigned16(rom.posX) * ROM_SCALE,
@@ -195,6 +210,22 @@ export function createHelicopter() {
     prev.x = toSigned16(rom.posX); prev.z = toSigned16(rom.posY); prev.y = rom.altitude;
     lastDx = 0; lastDy = 0;
   }
+
+  // Touch down at the current position (ROM landing commit, $8AEB-$8B0D).
+  // groundY is the world-space ground height under the helicopter.
+  function land({ refuelZone = true, groundY = 0 } = {}) {
+    landRom(rom, {
+      refuelZone,
+      groundAltitude: Math.round(THREE.MathUtils.clamp(groundY / ALT_SCALE, 0, ALT_CAP)),
+    });
+    prev.y = rom.altitude;
+  }
+
+  // Authentic HUD values derived from the gauge pointers.
+  const fuelFraction = () => fuelStepsRemaining(rom.fuelGauge) / FUEL_STEPS_FULL;
+  const timeLeftSeconds = () =>
+    timerStepsRemaining(rom.timerGauge) * 255 * TICK_SECONDS
+    + (255 - rom.timerPrescaler) * TICK_SECONDS;
 
   function reset() {
     Object.assign(rom, createRomState());
@@ -209,7 +240,11 @@ export function createHelicopter() {
 
   reset();
 
-  return { group, body, update, velocity, wind, setWorldPosition, reset, rom, ROM_SCALE };
+  return {
+    group, body, update, velocity, wind,
+    setWorldPosition, land, reset, rom, ROM_SCALE,
+    fuelFraction, timeLeftSeconds,
+  };
 }
 
 export { VELOCITY_TABLE, ROM_SCALE };

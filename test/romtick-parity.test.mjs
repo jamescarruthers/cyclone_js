@@ -20,21 +20,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { romTick } from '../src/rom-physics.js';
+import { romTick, fuelTick, timerTick } from '../src/rom-physics.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-// Physics fields: state-block offset and byte width.
+// Physics + fuel + timer fields: state-block offset and byte width.
 const FIELDS = {
   posX: [0x00, 2], posY: [0x02, 2],
   heading: [0x06, 1], pend1: [0x07, 1], pend2: [0x08, 1],
   altitude: [0x0D, 1], hitGround: [0x14, 1], landed: [0x15, 1],
   noFuel: [0x16, 1], rampUp: [0x1A, 1], rampDn: [0x1B, 1],
   turnDelay: [0x21, 1], thrust: [0x27, 1], latchedHeading: [0x3B, 1],
+  refueling: [0x2E, 1],
+  fuelPrescaler: [0x17, 1], fuelGauge: [0x18, 2],
+  timerPrescaler: [0x28, 1], timerGauge: [0x1C, 2],
 };
-const COUNTER = 0x28;   // $7528: main-loop iteration counter
+const COUNTER = 0x28;   // $7528: increments once per iteration (timer prescaler)
 const BUTTONS = 0x22;   // $7522: decoded input byte
-const BOOT_SETTLE = 300;
+// First iterations begin ~f130 (after the intro beep); the refuel phase
+// from f~135 onward is part of the verified data.
+const BOOT_SETTLE = 140;
 
 const read = (blk, [o, n]) => (n === 2 ? blk[o] | (blk[o + 1] << 8) : blk[o]);
 
@@ -64,6 +69,8 @@ for (const name of ['takeoff_climb', 'forward_flight', 'turns']) {
     for (let i = 0; i + 1 < samples.length; i++) {
       const got = { ...samples[i].state };
       romTick(got, samples[i].buttons);
+      fuelTick(got);
+      timerTick(got);
       assert.deepEqual(got, samples[i + 1].state,
         `transition ${i} (vsync frame ${samples[i].frame} -> ${samples[i + 1].frame}, ` +
         `buttons ${samples[i].buttons.toString(2).padStart(5, '0')}) diverged`);

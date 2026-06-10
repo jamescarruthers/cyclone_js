@@ -9,14 +9,13 @@ import { sound } from './sound.js';
 import { setupTouchControls } from './touch-controls.js';
 
 // -----------------------------------------------------------------------
-// Tunables — rough analogues of the constants the original reads out of
-// memory at $7500 each frame (fuel countdown, timer, cyclone tick).
+// Mission constants.  Fuel and the mission timer are no longer invented:
+// they run on the ROM's own gauge-pointer systems inside helicopter.js
+// (see src/rom-physics.js — burn every 49th tick, refuel while landed,
+// timer step every 255 ticks, ~17.4 minutes total).
 const MISSION_CRATES = 5;
 const CRATE_SPAWN    = 8;
 const START_LIVES    = 3;
-const START_FUEL     = 100;      // percent
-const FUEL_BURN      = 100 / 360;// 100% over ~6 minutes of flight
-const TIME_LIMIT     = 5 * 60;   // 5-minute mission timer
 // (cyclone speed lives in cyclone.js — CYCLONE_STEP, in ROM units/tick)
 
 // Score values
@@ -28,13 +27,12 @@ const SCORE_TIME_BONUS_PER_SEC = 5;
 const state = {
   running: false,
   time: 0,
-  remaining: TIME_LIMIT,
+  remaining: 0,
   delivered: 0,
   kills: 0,
   carried: 0,
   carryCap: 3,
   lives: START_LIVES,
-  fuel: START_FUEL,
   score: 0,
   wind: 0,
   cameraMode: 0,
@@ -103,10 +101,17 @@ pad.position.y += 0.02;
 scene.add(pad);
 
 const helicopter = createHelicopter();
-// Seed the ROM state so posX/posY match BASE
+// Start landed on BASE's helipad, refuelling — exactly how the 1985 game
+// begins (state template: landed=1, $752E=1).  Hold UP to take off.
+// The template fuel gauge ($47BC) is nearly empty; the original refuels
+// during its boot/menu phase, reaching $427C (~54%) by first take-off —
+// give spawns that observed boot-ready level.
+const FUEL_BOOT_READY = 0x427C;
+const PAD_REST_Y = () => pad.position.y + 1.5;
+helicopter.rom.fuelGauge = FUEL_BOOT_READY;
 helicopter.setWorldPosition(new THREE.Vector3(
-  home.topCenter.x, home.topCenter.y + 14, home.topCenter.z,
-));
+  home.topCenter.x, PAD_REST_Y(), home.topCenter.z,
+), { landed: true });
 scene.add(helicopter.group);
 
 // Crates — deterministic positions derived from island records
@@ -212,11 +217,17 @@ function loseLife(reason) {
     return;
   }
   setStatus(`${reason} — ${state.lives} ${state.lives === 1 ? 'life' : 'lives'} left.`, 'warn');
+  // Respawn landed on the pad with the template fuel load, but preserve
+  // the mission timer across the death.
+  const timerGauge = helicopter.rom.timerGauge;
+  const timerPrescaler = helicopter.rom.timerPrescaler;
   helicopter.reset();
+  helicopter.rom.timerGauge = timerGauge;
+  helicopter.rom.timerPrescaler = timerPrescaler;
+  helicopter.rom.fuelGauge = FUEL_BOOT_READY;
   helicopter.setWorldPosition(new THREE.Vector3(
-    home.topCenter.x, home.topCenter.y + 20, home.topCenter.z,
-  ));
-  state.fuel = Math.max(state.fuel, 60);
+    home.topCenter.x, PAD_REST_Y(), home.topCenter.z,
+  ), { landed: true });
   state.noFuel = false;
   state.carried = 0;
   state.invulnUntil = state.time + 3;
@@ -254,9 +265,10 @@ function tick() {
 
   if (state.running && !state.paused) {
     // Accumulate mission time from dt (not the wall clock) so pausing
-    // actually stops the timer.
+    // actually stops it.  The mission countdown itself runs on the ROM
+    // timer gauge inside the helicopter tick; state.remaining is set
+    // below from helicopter.timeLeftSeconds().
     state.time += dt;
-    state.remaining = Math.max(0, TIME_LIMIT - state.time);
 
     // Flight input — maps directly to the ROM's FORWARD / TURN_L / TURN_R /
     // UP / DOWN buttons (see helicopter.js romTick).  There is no pitch
@@ -270,20 +282,19 @@ function tick() {
            - (keys.ShiftLeft || keys.ShiftRight ? 1 : 0),
     };
 
-    // Fuel: burned whenever we have any input, at idle rate otherwise.
-    const moving = ctrl.pitch || ctrl.lift || ctrl.yaw;
-    const burn = FUEL_BURN * (moving ? 1.4 : 0.5);
-    state.fuel = Math.max(0, state.fuel - burn * dt);
-    if (state.fuel <= 0 && !state.noFuel) {
+    // Fuel and the mission timer run on the ROM systems inside the
+    // helicopter tick (burn, refuel-when-landed, forced descent and
+    // thrust-decay on empty are all native rom-physics behaviour).
+    const events = helicopter.update(dt, ctrl);
+    if (events.refuelBlip) sound.warnHi();
+    if (helicopter.rom.noFuel === 1 && !state.noFuel) {
       state.noFuel = true;
-      setStatus('NO FUEL — auto-descending!', 'warn');
+      setStatus('NO FUEL — going down!', 'warn');
       sound.noFuel();
+    } else if (helicopter.rom.noFuel === 0 && state.noFuel) {
+      state.noFuel = false;
     }
-    // If out of fuel, force descent (lift = -1) and kill thrust.
-    const effectiveCtrl = state.noFuel
-      ? { pitch: 0, yaw: 0, lift: -1 }
-      : ctrl;
-    helicopter.update(dt, effectiveCtrl);
+    state.remaining = helicopter.timeLeftSeconds();
 
     // World-edge clamp (original shows "LEAVING MAP AREA" warning)
     const p = helicopter.group.position;
@@ -296,24 +307,35 @@ function tick() {
       p.z = THREE.MathUtils.clamp(p.z, -limit - 2, limit + 2);
       clamped = true;
     }
-    if (p.y < 0.8) { p.y = 0.8; clamped = true; }
-
-    // Collisions with island tops
-    for (const is of world.islands) {
-      const d = horizontalDistance(p, is.topCenter);
-      if (d < is.radius * 0.9) {
-        const minY = is.topCenter.y + 2.2;
-        if (p.y < minY) {
-          p.y = minY;
-          if (helicopter.wind.y < 0) helicopter.wind.y = 0;
-          clamped = true;
-        }
-      }
-    }
     // Write clamps back into the ROM position, otherwise the next physics
     // tick recomputes group.position from the unclamped ROM coordinates
     // and the clamp has no effect.
-    if (clamped) helicopter.setWorldPosition(p);
+    if (clamped) {
+      helicopter.setWorldPosition(p, { landed: helicopter.rom.landed === 1 });
+    }
+
+    // Terrain contact — ROM landing semantics ($8A7A/$8AEB): touching down
+    // with a descent ramp of 3 crashes ($8AB7); a gentler touch lands,
+    // arms refuelling and snaps altitude to the 8-unit grid.  Flying into
+    // an island side, or descending to sea level ($7514), is fatal.
+    if (helicopter.rom.landed !== 1) {
+      const over = world.islands.find(is =>
+        horizontalDistance(p, is.topCenter) < is.radius * 0.9);
+      const groundY = over ? over.topCenter.y + 1.5 : 0;
+      if (over && p.y < groundY - 2.5) {
+        loseLife('Flew into the terrain');
+      } else if (helicopter.rom.hitGround === 1 && !over) {
+        loseLife('Ditched into the sea');
+      } else if (p.y <= groundY + 0.1 && helicopter.rom.rampDn >= 1 && over) {
+        if (helicopter.rom.rampDn >= 3) {
+          loseLife('Came down too fast');
+        } else {
+          helicopter.land({ refuelZone: true, groundY });
+          setStatus(`Landed on ${over.name} — refuelling. Hold SPACE to take off.`,
+            over.isHome ? 'good' : undefined);
+        }
+      }
+    }
 
     // World animation
     world.update(dt, t);
@@ -351,8 +373,10 @@ function tick() {
       if (c.userData.picked) continue;
       remaining++;
 
+      // Pick up by landing beside the crate (the original's model —
+      // "land beside a crate to pick it up").
       const dh = horizontalDistance(c.position, p);
-      if (dh < 4.5 && p.y - c.position.y < 6 && state.carried < state.carryCap) {
+      if (helicopter.rom.landed === 1 && dh < 9 && state.carried < state.carryCap) {
         c.userData.picked = true;
         state.carried++;
         scene.remove(c);
@@ -380,22 +404,17 @@ function tick() {
       }
     }
 
-    // Deliver to BASE
+    // Deliver to BASE by landing on the pad.  (Refuelling needs no pad —
+    // any successful landing arms the ROM refuel system.)
     const dPad = horizontalDistance(p, pad.position);
-    const onPad = dPad < 5 && (p.y - pad.position.y) < 5;
-    if (onPad) {
-      if (state.carried > 0) {
-        state.delivered += state.carried;
-        state.score += state.carried * SCORE_CRATE;
-        state.carried = 0;
-        hud.delivered.textContent = state.delivered;
-        hud.carried.textContent = 0;
-        setStatus(`Delivered! ${state.delivered}/${MISSION_CRATES} total.`, 'good');
-        sound.deliver();
-      }
-      // Refuel on the pad (slow trickle)
-      state.fuel = Math.min(100, state.fuel + 30 * dt);
-      if (state.noFuel && state.fuel > 5) state.noFuel = false;
+    if (helicopter.rom.landed === 1 && dPad < 8 && state.carried > 0) {
+      state.delivered += state.carried;
+      state.score += state.carried * SCORE_CRATE;
+      state.carried = 0;
+      hud.delivered.textContent = state.delivered;
+      hud.carried.textContent = 0;
+      setStatus(`Delivered! ${state.delivered}/${MISSION_CRATES} total.`, 'good');
+      sound.deliver();
     }
 
     // Cyclone hit
@@ -422,7 +441,7 @@ function tick() {
         `Time bonus: <b>${Math.floor(state.remaining * SCORE_TIME_BONUS_PER_SEC)}</b>. ` +
         `Cyclone destroyed <b>${state.kills}</b>.`
       );
-    } else if (state.remaining <= 0) {
+    } else if (events.timeUp) {
       endMission(false, 'Time Up',
         `Only ${state.delivered} of ${MISSION_CRATES} crates delivered.`,
         'The cyclone wins.');
@@ -434,9 +453,10 @@ function tick() {
     hud.time.textContent = `${mm}:${ss}`;
     hud.alt.textContent = Math.max(0, Math.round(altitudeAboveGround(p)));
     hud.spd.textContent = Math.round(Math.hypot(helicopter.velocity.x, helicopter.velocity.z) * 2);
-    hud.fuelBar.style.width = state.fuel.toFixed(0) + '%';
-    hud.fuelPct.textContent = state.fuel.toFixed(0) + '%';
-    hud.fuelPct.style.color = state.fuel < 15 ? '#ff6b6b' : state.fuel < 30 ? '#ffd257' : '#fff';
+    const fuelPct = helicopter.fuelFraction() * 100;
+    hud.fuelBar.style.width = fuelPct.toFixed(0) + '%';
+    hud.fuelPct.textContent = fuelPct.toFixed(0) + '%';
+    hud.fuelPct.style.color = fuelPct < 15 ? '#ff6b6b' : fuelPct < 30 ? '#ffd257' : '#fff';
     hud.score.textContent = state.score;
     compass.update(helicopter.group.rotation.y);
 
@@ -449,8 +469,8 @@ function tick() {
 
     // Proximity warnings — overrides other status when close
     if (state.wind > 0.4) setStatus('CYCLONE NEARBY — wind force rising!', 'warn');
-    else if (state.fuel < 15 && !state.noFuel) setStatus('FUEL LOW — return to BASE!', 'warn');
-    else if (state.remaining < 30) setStatus('TIME CRITICAL!', 'warn');
+    else if (fuelPct < 20 && !state.noFuel && !helicopter.rom.landed) setStatus('FUEL LOW — land to refuel!', 'warn');
+    else if (state.remaining < 60) setStatus('TIME CRITICAL!', 'warn');
 
     // Continuous sounds
     sound.windSet(state.wind);
@@ -458,7 +478,7 @@ function tick() {
     sound.rotorSet(throttle);
 
     // Low-fuel warning chirp (every ~2s)
-    if (state.fuel > 0 && state.fuel < 20) {
+    if (!state.noFuel && fuelPct < 20 && !helicopter.rom.landed) {
       if (!state.lastLowFuel || state.time - state.lastLowFuel > 2) {
         state.lastLowFuel = state.time; sound.lowFuel();
       }

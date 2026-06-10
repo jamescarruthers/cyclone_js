@@ -91,12 +91,22 @@ vsync**.
 The web app's flight model (`src/rom-physics.js`) is an
 instruction-exact port of the ROM routine at `$8135-$8268`:
 `test/romtick-parity.test.mjs` replays every main-loop transition
-recorded in the traces (301 of them) through `romTick()` and requires
-byte-for-byte identical results &mdash; turn gating and commit timing,
-the latched coast heading, take-off, ramp loops, caps, 16-bit position
-wraparound.  `src/helicopter.js` drives it at the measured authentic
-cadence (1 tick per 5 vsyncs) and keeps cyclone wind in a separate
-fractional accumulator so the ROM state stays integer-exact.
+recorded in the traces through `romTick()` and requires byte-for-byte
+identical results &mdash; turn gating and commit timing, the latched
+coast heading, take-off, ramp loops, caps, 16-bit position wraparound.
+`src/helicopter.js` drives it at the measured authentic cadence
+(1 tick per 5 vsyncs) and keeps cyclone wind in a separate fractional
+accumulator so the ROM state stays integer-exact.
+
+The **fuel and mission-timer systems are the ROM's too** (and are part
+of the same per-transition verification): both are display-file gauge
+pointers used as counters &mdash; fuel burns one gauge row every 49th
+iteration (`$82A7/$82B1`, empty at the sentinel `$48BC`), refuels one
+row per iteration while landed (`$8478`, clearing the no-fuel flag),
+and the timer (`$8284/$8292`) steps every 255 iterations giving a
+~17.4-minute mission.  Landing follows the ROM's recorded rules: a
+descent ramp of 3 crashes (`$8AB7`), gentler touchdowns land, arm
+refuelling and snap altitude to the 8-unit grid (`$8AEB-$8B0D`).
 
 ## File layout
 

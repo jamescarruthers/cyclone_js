@@ -75,7 +75,9 @@ export const TURN_DELAY = 3;       // $8175 / $81A6
 export const MAIN_LOOP_VSYNCS = 5;
 export const TICK_SECONDS = MAIN_LOOP_VSYNCS / 50;   // 0.1 s
 
-// Authentic initial values from the game's state template at $7564.
+// Authentic initial values from the game's state template at $7564
+// (fuel/timer gauge pointers are re-initialised by the front-end at boot;
+// those use the observed runtime values).
 export function createRomState() {
   return {
     posX: 0x0139,        // $7500/01
@@ -91,8 +93,113 @@ export function createRomState() {
     rampDn: 0,           // $751B
     turnDelay: 0,        // $7521
     thrust: 0,           // $7527
+    refueling: 1,        // $752E (set while landed in a refuel zone)
     latchedHeading: 4,   // $753B
+    crashed: 0,          // $7505 (set by the crash paths at $8B5D)
+    fuelPrescaler: 0,    // $7517
+    fuelGauge: 0x47BC,   // $7518/19 — display-file pointer used as counter
+    timerPrescaler: 0,   // $7528
+    timerGauge: 0x471E,  // $751C/1D — runtime boot value
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel ($8470 dispatcher -> $8478 refuel / $82A7+$82B1 burn).
+//
+// The fuel "counter" is literally the screen address of the gauge's current
+// pixel row.  Burning walks it forward one pixel row every 49th iteration
+// (prescaler $7517, CP $30 at $82AB); reaching the sentinel $48BC sets the
+// no-fuel flag $7516.  While landed in a refuel zone ($752E=1) it walks
+// BACKWARD one row per iteration (with a beeper blip per row, $8494) until
+// the gauge column reaches $1C = full.  Returns true when a refuel blip
+// happened this tick.
+export const FUEL_EMPTY = 0x48BC;  // $82B6/$82BB
+export const FUEL_FULL_COL = 0x1C; // $848A
+
+export function fuelTick(s) {
+  if (s.refueling === 1) {                          // $8470 -> $8478
+    s.fuelPrescaler = 0;                            // $8482
+    if ((s.fuelGauge & 0xFF) === FUEL_FULL_COL) return false;  // $848A RET Z
+    let h = (s.fuelGauge >> 8) - 1;                 // $849A DEC H
+    let l = s.fuelGauge & 0xFF;
+    if (h === 0x3F) { h = 0x47; l = (l - 0x20) & 0xFF; }  // $849C-$84A5
+    s.fuelGauge = (h << 8) | l;                     // $84A6
+    s.noFuel = 0;                                   // $84A9-$84AA
+    return true;                                    // beeper blip ($8494)
+  }
+  // Burn ($82A7): gauge advances every 49th iteration.
+  s.fuelPrescaler = (s.fuelPrescaler + 1) & 0xFF;   // INC (HL)
+  if (s.fuelPrescaler <= 0x30) return false;        // CP $30 / RET NC
+  s.fuelPrescaler = 0;                              // $82AF
+  let h = (s.fuelGauge >> 8) + 1;                   // $82B4 INC H
+  let l = s.fuelGauge & 0xFF;
+  if (h === 0x48) {                                 // $82B6
+    if (l === 0xBC) { s.noFuel = 1; return false; } // $82BA-$82C4
+    h = 0x40; l = (l + 0x20) & 0xFF;                // $82C5-$82CA
+  }
+  s.fuelGauge = (h << 8) | l;                       // $82CD
+  return false;
+}
+
+// Burn steps until empty (for HUD display; max from full $471C is 41).
+export function fuelStepsRemaining(gauge) {
+  let h = gauge >> 8, l = gauge & 0xFF, steps = 0;
+  while (steps < 64) {
+    h++;
+    if (h === 0x48) {
+      if (l === 0xBC) break;
+      h = 0x40; l = (l + 0x20) & 0xFF;
+    }
+    steps++;
+  }
+  return steps;
+}
+export const FUEL_STEPS_FULL = fuelStepsRemaining((0x47 << 8) | FUEL_FULL_COL);
+
+// ---------------------------------------------------------------------------
+// Mission timer ($8284/$8292): prescaler $7528 advances the timer gauge
+// $751C one row every 255 iterations; the game ends when the gauge column
+// reaches $DE (checked in the main loop at $5BCC).  From the boot value
+// $471E that is 41 steps — about 17.4 minutes at the authentic cadence.
+export const TIME_UP_COL = 0xDE;
+
+export function timerTick(s) {
+  s.timerPrescaler = (s.timerPrescaler + 1) & 0xFF; // INC / CP $FF / RET C
+  if (s.timerPrescaler !== 0xFF) return false;
+  s.timerPrescaler = 0;
+  let h = (s.timerGauge >> 8) + 1;                  // $8295 INC H
+  let l = s.timerGauge & 0xFF;
+  if (h === 0x48) { h = 0x40; l = (l + 0x20) & 0xFF; }  // $8297-$82A0
+  s.timerGauge = (h << 8) | l;
+  return (l & 0xFF) === TIME_UP_COL;                // $5BCC: L == $DE
+}
+
+export function timerStepsRemaining(gauge) {
+  let h = gauge >> 8, l = gauge & 0xFF, steps = 0;
+  while ((l & 0xFF) !== TIME_UP_COL && steps < 64) {
+    h++;
+    if (h === 0x48) { h = 0x40; l = (l + 0x20) & 0xFF; }
+    steps++;
+  }
+  return steps;
+}
+export const TIMER_STEPS_FULL = timerStepsRemaining(0x471E);
+
+// ---------------------------------------------------------------------------
+// Landing commit ($8AEB-$8B0D): semantics port.  In the original the
+// decision (land vs crash, $8B5D -> $7505=1) is made against view-space
+// terrain tables built by the 3D renderer; the web app supplies its own
+// terrain query and calls this on touchdown.  The exact recorded rules:
+//   * descent ramp must be gentle — rampDn >= 3 crashes ($8AB7-$8ABC);
+//   * a refuel-zone landing sets $752E ($8AEB-$8AF2);
+//   * altitude snaps UP to the next multiple of 8 ($8AFE-$8B0D);
+//   * the contact flag clears, landed sets ($8AF5-$8AFB).
+export function landRom(s, { refuelZone = false, groundAltitude = s.altitude } = {}) {
+  if (refuelZone) s.refueling = 1;                  // $8AF0-$8AF2
+  s.landed = 1;                                     // $8AF5-$8AF7
+  s.hitGround = 0;                                  // $8AFA-$8AFB
+  s.altitude = Math.min(ALT_CAP, ((groundAltitude + 7) >> 3) << 3);  // $8AFE-$8B0D
+  return s;
 }
 
 // One physics tick: the exact control flow of $8135..$8268.
@@ -178,7 +285,8 @@ function altitudeSection(s, c) {
     if (s.noFuel === 1) {
       s.rampUp = 0;                               // $8232 via $8203
     } else if (s.landed !== 0) {                  // $8205: landed -> takeoff
-      s.landed = 0;                               // $820C-$8210
+      s.landed = 0;                               // $820C-$820D
+      s.refueling = 0;                            // $8210 (clears $752E)
       return;                                     // RET: tick ends here
     } else {
       if (s.rampUp !== RAMP_CAP) s.rampUp++;      // $8214-$821C
