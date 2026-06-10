@@ -82,13 +82,21 @@ node tools/oracle.mjs --script traces/scripts/turns.json --out traces/turns.trac
 node --test 'test/*.test.mjs'     # golden traces + ROM invariants + JS parity
 ```
 
-The committed traces in `traces/` already pin down, from the running
-original: the velocity table, the heading step/delay mechanics, the
-thrust and altitude caps &mdash; and one big surprise: **the ROM's physics
-ticks once per main-loop iteration (~10 Hz, render-bound), not once per
-50 Hz vsync**, so the web port currently flies ~5&times; faster than the
-1985 game.  The parity test reports this known divergence until the port
-is corrected.
+The committed traces in `traces/` pin down, from the running original:
+the velocity table, the heading step/delay mechanics, the thrust and
+altitude caps &mdash; and one big surprise: **the ROM's physics ticks once
+per main-loop iteration (~10 Hz, render-bound), not once per 50 Hz
+vsync**.
+
+The web app's flight model (`src/rom-physics.js`) is an
+instruction-exact port of the ROM routine at `$8135-$8268`:
+`test/romtick-parity.test.mjs` replays every main-loop transition
+recorded in the traces (301 of them) through `romTick()` and requires
+byte-for-byte identical results &mdash; turn gating and commit timing,
+the latched coast heading, take-off, ramp loops, caps, 16-bit position
+wraparound.  `src/helicopter.js` drives it at the measured authentic
+cadence (1 tick per 5 vsyncs) and keeps cyclone wind in a separate
+fractional accumulator so the ROM state stays integer-exact.
 
 ## File layout
 

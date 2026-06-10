@@ -1,16 +1,7 @@
-// Parity between src/helicopter.js and the real game (golden traces).
-//
-// Phase 1 scope: assert the *qualitative* mechanics that the port already
-// claims to implement (heading-commit order, caps), and REPORT the known
-// quantitative divergences without failing:
-//
-//   * pacing — the ROM's physics runs once per main-loop iteration
-//     (~4-6 vsyncs, render-bound), not once per 50 Hz vsync as the port
-//     assumes.  Measured here from the golden trace and printed.
-//   * coast heading — the ROM drifts on the heading latched at $753B
-//     while FORWARD was last held; the port uses the live heading.
-//
-// Phase 2 tightens these into hard assertions once the port is fixed.
+// Parity between src/helicopter.js (the rendered vehicle wrapper) and the
+// real game (golden traces): heading-commit order, caps, and pacing.
+// The instruction-exact physics itself is gated separately and strictly
+// by test/romtick-parity.test.mjs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,9 +44,9 @@ function runSim(script) {
     ctrl.pitch = state.forward ? 1 : 0;
     ctrl.lift = (state.up ? 1 : 0) - (state.down ? 1 : 0);
     ctrl.yaw = (state.right ? 1 : 0) - (state.left ? 1 : 0);
-    h.update(0.02, ctrl);   // one 50 Hz tick per frame
+    h.update(0.02, ctrl);   // one vsync frame; physics ticks every 5th
     if (h.rom.heading !== lastHeading) {
-      headings.push(h.rom.heading * 2);  // sim stores 0..7; ROM uses 0..14
+      headings.push(h.rom.heading);      // already in ROM 0..14 units
       lastHeading = h.rom.heading;
     }
   }
@@ -97,7 +88,8 @@ test('caps match the ROM: thrust 7, altitude 60, turn delay 3', () => {
   assert.equal(sim.rom.altitude <= 60, true);
 });
 
-test('REPORT: pacing divergence (known, fixed in Phase 2)', () => {
+test('pacing matches the measured main-loop cadence of the 1985 game', async () => {
+  const { MAIN_LOOP_VSYNCS } = await import('../src/rom-physics.js');
   const { rows, idx } = loadTrace('forward_flight');
   // Measure ROM physics cadence: vsync frames per 1-unit movement at full
   // thrust (heading 4 = pure +X).
@@ -110,7 +102,7 @@ test('REPORT: pacing divergence (known, fixed in Phase 2)', () => {
   }
   const framesPerTick = (last - first) / (moves - 1);
   console.log(`  ROM physics cadence at full thrust: 1 tick per ${framesPerTick.toFixed(2)} vsync frames (~${(50 / framesPerTick).toFixed(1)} Hz)`);
-  console.log('  src/helicopter.js currently ticks at 50 Hz -> ' +
-    `${framesPerTick.toFixed(1)}x faster than the 1985 game.  Tracked for Phase 2.`);
-  assert.ok(framesPerTick > 1, 'trace must show sub-50 Hz physics cadence');
+  console.log(`  port ticks at 1 per ${MAIN_LOOP_VSYNCS} vsyncs`);
+  assert.ok(Math.abs(framesPerTick - MAIN_LOOP_VSYNCS) / MAIN_LOOP_VSYNCS < 0.05,
+    `port cadence (${MAIN_LOOP_VSYNCS} vsyncs/tick) must be within 5% of measured (${framesPerTick.toFixed(2)})`);
 });
