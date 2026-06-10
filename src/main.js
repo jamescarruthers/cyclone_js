@@ -17,7 +17,7 @@ const START_LIVES    = 3;
 const START_FUEL     = 100;      // percent
 const FUEL_BURN      = 100 / 360;// 100% over ~6 minutes of flight
 const TIME_LIMIT     = 5 * 60;   // 5-minute mission timer
-const CYCLONE_SPEED  = 4.5;
+// (cyclone speed lives in cyclone.js — CYCLONE_STEP, in ROM units/tick)
 
 // Score values
 const SCORE_CRATE    = 1000;
@@ -144,6 +144,9 @@ scene.add(survivors.group);
 const mapView = createMapView(world);
 const compass = createCompass();
 
+// Input ------------------------------------------------------------------
+const keys = Object.create(null);
+
 // Touch controls: always mounted, but CSS hides them on non-coarse pointers.
 // `?touch=1` in the URL forces them on for testing from desktop.
 if (new URL(location.href).searchParams.get('touch') === '1') {
@@ -151,8 +154,6 @@ if (new URL(location.href).searchParams.get('touch') === '1') {
 }
 setupTouchControls(keys);
 
-// Input ------------------------------------------------------------------
-const keys = Object.create(null);
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'KeyR') window.location.reload();
@@ -252,8 +253,10 @@ function tick() {
   last = t;
 
   if (state.running && !state.paused) {
-    state.time = t;
-    state.remaining = Math.max(0, TIME_LIMIT - t);
+    // Accumulate mission time from dt (not the wall clock) so pausing
+    // actually stops the timer.
+    state.time += dt;
+    state.remaining = Math.max(0, TIME_LIMIT - state.time);
 
     // Flight input — maps directly to the ROM's FORWARD / TURN_L / TURN_R /
     // UP / DOWN buttons (see helicopter.js romTick).  There is no pitch
@@ -286,13 +289,14 @@ function tick() {
     const p = helicopter.group.position;
     const limit = world.worldSize * 0.48;
     const beyond = Math.max(Math.abs(p.x), Math.abs(p.z)) - limit;
+    let clamped = false;
     if (beyond > 0) {
       setStatus('LEAVING MAP AREA — turn back!', 'warn');
       p.x = THREE.MathUtils.clamp(p.x, -limit - 2, limit + 2);
       p.z = THREE.MathUtils.clamp(p.z, -limit - 2, limit + 2);
+      clamped = true;
     }
-    p.y = Math.max(p.y, 0.8);
-    p.y = Math.min(p.y, 180);
+    if (p.y < 0.8) { p.y = 0.8; clamped = true; }
 
     // Collisions with island tops
     for (const is of world.islands) {
@@ -301,10 +305,15 @@ function tick() {
         const minY = is.topCenter.y + 2.2;
         if (p.y < minY) {
           p.y = minY;
-          if (helicopter.velocity.y < 0) helicopter.velocity.y = 0;
+          if (helicopter.wind.y < 0) helicopter.wind.y = 0;
+          clamped = true;
         }
       }
     }
+    // Write clamps back into the ROM position, otherwise the next physics
+    // tick recomputes group.position from the unclamped ROM coordinates
+    // and the clamp has no effect.
+    if (clamped) helicopter.setWorldPosition(p);
 
     // World animation
     world.update(dt, t);
@@ -322,8 +331,8 @@ function tick() {
       if (away.lengthSq() > 0) away.normalize();
       const swirl = new THREE.Vector3(-away.z, 0, away.x);
       const gust = state.wind * 7 * dt;
-      helicopter.velocity.addScaledVector(away, gust * 0.6);
-      helicopter.velocity.addScaledVector(swirl, gust);
+      helicopter.wind.addScaledVector(away, gust * 0.6);
+      helicopter.wind.addScaledVector(swirl, gust);
     }
 
     // Crate interactions

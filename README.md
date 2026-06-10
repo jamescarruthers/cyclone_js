@@ -40,13 +40,19 @@ python3 -m http.server 8000
 
 ### Controls
 
+The control model matches the ROM's five buttons (FORWARD / TURN_L /
+TURN_R / UP / DOWN) — there is no pitch, roll or strafing in the original.
+
 | key | action |
 | --- | --- |
-| <kbd>W</kbd> / <kbd>S</kbd> | pitch forward / back |
-| <kbd>A</kbd> / <kbd>D</kbd> | roll left / right |
-| <kbd>Q</kbd> / <kbd>E</kbd> | yaw left / right |
+| <kbd>W</kbd> / <kbd>&uarr;</kbd> | forward thrust |
+| <kbd>A</kbd> / <kbd>Q</kbd> / <kbd>&larr;</kbd> | turn left (45° steps) |
+| <kbd>D</kbd> / <kbd>E</kbd> / <kbd>&rarr;</kbd> | turn right (45° steps) |
 | <kbd>Space</kbd> / <kbd>Shift</kbd> | climb / descend |
-| <kbd>C</kbd> | cycle camera (chase / iso / cinematic) |
+| <kbd>M</kbd> | map view |
+| <kbd>C</kbd> | cycle camera (iso / chase / cinematic / overhead) |
+| <kbd>P</kbd> | pause |
+| <kbd>N</kbd> | mute |
 | <kbd>R</kbd> | restart |
 
 ### Faithfulness to the 1985 original

@@ -164,9 +164,13 @@ export function createHelicopter() {
   const visual = { yaw: 0 };   // smoothed visual yaw
   let tickAcc = 0;
 
-  // Exposed Cartesian velocity (world units / sec) — consumers like the
-  // cyclone-wind push still modify this between ticks.
+  // Exposed Cartesian velocity (world units / sec) — read-only for
+  // consumers (HUD speed).  Derived from the ROM direction each frame.
   const velocity = new THREE.Vector3();
+  // External pushes (cyclone wind) accumulate here, separate from
+  // `velocity` so the helicopter's own motion never feeds back into the
+  // wind displacement.
+  const wind = new THREE.Vector3();
 
   // ----- Single ROM tick (runs exactly like $80F9 does) -----------
   function romTick(ctrl) {
@@ -242,9 +246,9 @@ export function createHelicopter() {
       down:    ctrl.lift < 0,
     };
 
-    // External pushes (cyclone wind) come in through `velocity` between
+    // External pushes (cyclone wind) come in through `wind` between
     // ticks; convert them to ROM-unit displacement per 50-Hz step.
-    const windPerTick = new THREE.Vector3().copy(velocity).multiplyScalar(TICK_DT / ROM_SCALE);
+    const windPerTick = new THREE.Vector3().copy(wind).multiplyScalar(TICK_DT / ROM_SCALE);
 
     // Advance simulation in fixed 50 Hz steps.
     tickAcc += dt;
@@ -262,7 +266,7 @@ export function createHelicopter() {
       ticks++;
     }
     // Wind decay (drag on whatever main.js pushed us with)
-    velocity.multiplyScalar(Math.pow(0.92, dt * TICK_HZ));
+    wind.multiplyScalar(Math.pow(0.92, dt * TICK_HZ));
 
     // --- Interpolation for smooth rendering between ticks -----------
     const alpha = THREE.MathUtils.clamp(tickAcc / TICK_DT, 0, 1);
@@ -301,9 +305,7 @@ export function createHelicopter() {
     // --- Expose a Cartesian velocity for consumers that want speed --
     // Derived from the active direction, scaled to world units/sec.
     const unitsPerSec = TICK_HZ * ROM_SCALE;
-    velocity.x = rom.dirX * unitsPerSec + velocity.x * 0.0;  // discard prev cached
-    velocity.z = rom.dirY * unitsPerSec;
-    // Don't overwrite .y — main.js reads only x/z for speed HUD
+    velocity.set(rom.dirX * unitsPerSec, 0, rom.dirY * unitsPerSec);
   }
 
   // Place helicopter at a given world position by back-converting to ROM units.
@@ -319,9 +321,10 @@ export function createHelicopter() {
     rom.heading = 0; rom.headingEnd = 0; rom.turnDelay = 0;
     rom.thrust = 0; rom.altUp = 0; rom.altDn = 0;
     velocity.set(0, 0, 0);
+    wind.set(0, 0, 0);
     visual.yaw = 0;
     body.rotation.set(0, 0, 0);
   }
 
-  return { group, body, update, velocity, setWorldPosition, reset, rom, ROM_SCALE };
+  return { group, body, update, velocity, wind, setWorldPosition, reset, rom, ROM_SCALE };
 }
