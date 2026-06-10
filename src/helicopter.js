@@ -7,9 +7,14 @@ import * as THREE from 'three';
 // Key findings from the disassembly of $80F9 (main physics routine) and the
 // velocity-delta table at $826F:
 //
-//   * Physics runs at 50 Hz (Spectrum vsync) — we advance with a fixed
-//     accumulator, never using dt directly.  Visuals interpolate between
-//     ticks so movement still looks smooth at 60+ fps.
+//   * Physics tick: this port currently steps at 50 Hz (Spectrum vsync)
+//     with a fixed accumulator.  NOTE: golden traces from the real game
+//     (see traces/ and test/sim-parity.test.mjs) show the original's
+//     physics actually runs once per *main-loop iteration* — about every
+//     5 vsync frames (~10 Hz) — because the loop is render-bound.  The
+//     50 Hz assumption makes this port ~5x faster than the 1985 game;
+//     correcting the cadence is tracked as Phase 2 of the byte-accuracy
+//     work.  Visuals interpolate between ticks either way.
 //
 //   * Heading is a 4-bit value (0..15) stored at $7506, but it always moves
 //     in steps of 2 — every turn press writes TWO decrements or increments

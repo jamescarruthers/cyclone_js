@@ -69,6 +69,27 @@ What it does *not* do is emulate the Z80 &mdash; if you want the genuine
 article, load `decrypted/cyclone_side1.tap` in any Spectrum emulator
 (`fuse`, `Spectaculator`, etc.).
 
+## 3. The byte-accuracy oracle
+
+`emu/` contains a tiny headless ZX Spectrum 48K (vendored MIT Z80 core +
+the real 48K ROM + 50 Hz interrupts, no display or tape) that runs the
+decrypted game directly as a **ground-truth oracle**.  Scripted input
+timelines are replayed through the real 1985 code and the game's state
+block at `$7500` is recorded every vsync frame:
+
+```bash
+node tools/oracle.mjs --script traces/scripts/turns.json --out traces/turns.trace.json
+node --test 'test/*.test.mjs'     # golden traces + ROM invariants + JS parity
+```
+
+The committed traces in `traces/` already pin down, from the running
+original: the velocity table, the heading step/delay mechanics, the
+thrust and altitude caps &mdash; and one big surprise: **the ROM's physics
+ticks once per main-loop iteration (~10 Hz, render-bound), not once per
+50 Hz vsync**, so the web port currently flies ~5&times; faster than the
+1985 game.  The parity test reports this known divergence until the port
+is corrected.
+
 ## File layout
 
 ```
@@ -91,4 +112,11 @@ src/
   helicopter.js          the player vehicle
   cyclone.js             the tornado (GPU-billboarded points)
   props.js               crate & helipad
+emu/
+  machine.mjs            headless 48K Spectrum (memory + keyboard + 50 Hz INT)
+  z80.mjs                vendored Z80 core (MIT, see emu/NOTICE.md)
+  roms/48.rom            48K ROM (see emu/NOTICE.md)
+tools/oracle.mjs         runs scripted inputs through the real game, dumps traces
+traces/                  golden per-frame state traces of the 1985 original
+test/                    oracle determinism, ROM invariants, JS parity
 ```
