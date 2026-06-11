@@ -41,7 +41,7 @@ const worldToRom = (w) => (Math.round(w / ROM_SCALE) + ROM_CENTER) & 0xFFFF;
 export const CELL_SIZE_WORLD = 32 * ROM_SCALE;
 export const cellToWorld = (c) => (c * 32 + 16 - ROM_CENTER) * ROM_SCALE;
 
-export function createHelicopter() {
+export function createHelicopter({ seed } = {}) {
   const group = new THREE.Group();   // world transform (yaw here)
   const body  = new THREE.Group();   // cosmetic tilt
   group.add(body);
@@ -119,9 +119,9 @@ export function createHelicopter() {
   const velocity = new THREE.Vector3();
 
   // --- The cyclone & wind system ($8370 init, $9038-$9176, $7378) -----
-  // PRNG seed: the original inherits whatever the spare sysvar held;
-  // we roll a fresh 16-bit seed per session.
-  const prng = { seed: (Math.random() * 0x10000) | 0 };
+  // PRNG seed: the original inherits whatever the spare sysvar held; we
+  // roll a fresh 16-bit seed per session (tests pin one for determinism).
+  const prng = { seed: (seed ?? (Math.random() * 0x10000)) & 0xFFFF };
   const cyclone = {
     ...createCycloneState(prng),
     dist: 15,            // $7550
