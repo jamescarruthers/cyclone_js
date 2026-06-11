@@ -30,8 +30,9 @@ write-up, including:
 
 ## 2. Running the web app
 
-It's a pure static site that loads `three` from a CDN via `importmap`, so any
-static server works:
+It's a pure static site with `three` vendored locally (`vendor/`, see
+`vendor/NOTICE.md`), so any static server works — no CDN or network
+dependency:
 
 ```bash
 python3 -m http.server 8000
