@@ -28,7 +28,11 @@ function loadScript(name) {
 // Returns the sequence of committed headings (in ROM 0..14 units) and the
 // per-tick positions.
 function runSim(script) {
-  const h = createHelicopter();
+  // Pin the cyclone PRNG seed: with a random seed the cyclone can wander
+  // into control-corruption range (<5 cells) mid-flight and scramble the
+  // heading sequence — exactly what it does to players, but fatal for a
+  // deterministic test.  Seed 7 keeps it at distance >= 8 throughout.
+  const h = createHelicopter({ seed: 7 });
   h.setWorldPosition({ x: 0, y: 20, z: 0 });
   const ctrl = { pitch: 0, yaw: 0, lift: 0 };
   const events = [...(script.events ?? [])].sort((a, b) => a.frame - b.frame);
