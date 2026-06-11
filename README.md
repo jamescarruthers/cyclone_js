@@ -40,13 +40,19 @@ python3 -m http.server 8000
 
 ### Controls
 
+The control model matches the ROM's five buttons (FORWARD / TURN_L /
+TURN_R / UP / DOWN) — there is no pitch, roll or strafing in the original.
+
 | key | action |
 | --- | --- |
-| <kbd>W</kbd> / <kbd>S</kbd> | pitch forward / back |
-| <kbd>A</kbd> / <kbd>D</kbd> | roll left / right |
-| <kbd>Q</kbd> / <kbd>E</kbd> | yaw left / right |
+| <kbd>W</kbd> / <kbd>&uarr;</kbd> | forward thrust |
+| <kbd>A</kbd> / <kbd>Q</kbd> / <kbd>&larr;</kbd> | turn left (45° steps) |
+| <kbd>D</kbd> / <kbd>E</kbd> / <kbd>&rarr;</kbd> | turn right (45° steps) |
 | <kbd>Space</kbd> / <kbd>Shift</kbd> | climb / descend |
-| <kbd>C</kbd> | cycle camera (chase / iso / cinematic) |
+| <kbd>M</kbd> | map view |
+| <kbd>C</kbd> | cycle camera (iso / chase / cinematic / overhead) |
+| <kbd>P</kbd> | pause |
+| <kbd>N</kbd> | mute |
 | <kbd>R</kbd> | restart |
 
 ### Faithfulness to the 1985 original
@@ -62,6 +68,54 @@ The web app uses the real ROM-recovered:
 What it does *not* do is emulate the Z80 &mdash; if you want the genuine
 article, load `decrypted/cyclone_side1.tap` in any Spectrum emulator
 (`fuse`, `Spectaculator`, etc.).
+
+## 3. The byte-accuracy oracle
+
+`emu/` contains a tiny headless ZX Spectrum 48K (vendored MIT Z80 core +
+the real 48K ROM + 50 Hz interrupts, no display or tape) that runs the
+decrypted game directly as a **ground-truth oracle**.  Scripted input
+timelines are replayed through the real 1985 code and the game's state
+block at `$7500` is recorded every vsync frame:
+
+```bash
+node tools/oracle.mjs --script traces/scripts/turns.json --out traces/turns.trace.json
+node --test 'test/*.test.mjs'     # golden traces + ROM invariants + JS parity
+```
+
+The committed traces in `traces/` pin down, from the running original:
+the velocity table, the heading step/delay mechanics, the thrust and
+altitude caps &mdash; and one big surprise: **the ROM's physics ticks once
+per main-loop iteration (~10 Hz, render-bound), not once per 50 Hz
+vsync**.
+
+The web app's flight model (`src/rom-physics.js`) is an
+instruction-exact port of the ROM routine at `$8135-$8268`:
+`test/romtick-parity.test.mjs` replays every main-loop transition
+recorded in the traces through `romTick()` and requires byte-for-byte
+identical results &mdash; turn gating and commit timing, the latched
+coast heading, take-off, ramp loops, caps, 16-bit position wraparound.
+`src/helicopter.js` drives it at the measured authentic cadence
+(1 tick per 5 vsyncs) and keeps cyclone wind in a separate fractional
+accumulator so the ROM state stays integer-exact.
+
+The **fuel and mission-timer systems are the ROM's too** (and are part
+of the same per-transition verification): both are display-file gauge
+pointers used as counters &mdash; fuel burns one gauge row every 49th
+iteration (`$82A7/$82B1`, empty at the sentinel `$48BC`), refuels one
+row per iteration while landed (`$8478`, clearing the no-fuel flag),
+and the timer (`$8284/$8292`) steps every 255 iterations giving a
+~17.4-minute mission.  Landing follows the ROM's recorded rules: a
+descent ramp of 3 crashes (`$8AB7`), gentler touchdowns land, arm
+refuelling and snap altitude to the 8-unit grid (`$8AEB-$8B0D`).
+
+So is the **cyclone** (`$8370/$909E-$9176/$7378`, trace-verified): it
+spawns in a random map corner, random-walks one cell per 25 iterations
+under "direction regimes" re-rolled every 9 moves (PRNG `$8B74`, ported
+byte-exact and A/B-tested against the emulator), and its famous wind is
+not a force at all &mdash; below Chebyshev distance 5 it **corrupts your
+controls** with random fake button presses, and inside the core it
+overrides them entirely with DOWN+LEFT.  The cyclone kills by flying
+you into the ground.
 
 ## File layout
 
@@ -85,4 +139,11 @@ src/
   helicopter.js          the player vehicle
   cyclone.js             the tornado (GPU-billboarded points)
   props.js               crate & helipad
+emu/
+  machine.mjs            headless 48K Spectrum (memory + keyboard + 50 Hz INT)
+  z80.mjs                vendored Z80 core (MIT, see emu/NOTICE.md)
+  roms/48.rom            48K ROM (see emu/NOTICE.md)
+tools/oracle.mjs         runs scripted inputs through the real game, dumps traces
+traces/                  golden per-frame state traces of the 1985 original
+test/                    oracle determinism, ROM invariants, JS parity
 ```

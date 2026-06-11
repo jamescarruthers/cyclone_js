@@ -1,0 +1,8 @@
+{
+  "name": "takeoff_climb",
+  "frames": 600,
+  "events": [
+    { "frame": 250, "controls": { "up": true } },
+    { "frame": 450, "controls": { "up": false } }
+  ]
+}

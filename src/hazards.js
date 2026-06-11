@@ -65,10 +65,13 @@ export function createAircraft(world, count = 3) {
     const side = Math.floor(Math.random() * 4);
     const s = worldSize * 0.55;
     const off = (Math.random() * 2 - 1) * s;
-    if (side === 0) { p.position.set(-s, 40 + Math.random()*50,  off); p.userData.vel = new THREE.Vector3(14, 0, 0); }
-    if (side === 1) { p.position.set( s, 40 + Math.random()*50,  off); p.userData.vel = new THREE.Vector3(-14, 0, 0); }
-    if (side === 2) { p.position.set( off, 40 + Math.random()*50, -s); p.userData.vel = new THREE.Vector3(0, 0, 14); }
-    if (side === 3) { p.position.set( off, 40 + Math.random()*50,  s); p.userData.vel = new THREE.Vector3(0, 0, -14); }
+    // Keep planes inside the helicopter's flyable band (the ROM altitude
+    // cap of 60 maps to ~38 world units) so the hazard can actually hit.
+    const alt = () => 14 + Math.random() * 20;
+    if (side === 0) { p.position.set(-s, alt(),  off); p.userData.vel = new THREE.Vector3(14, 0, 0); }
+    if (side === 1) { p.position.set( s, alt(),  off); p.userData.vel = new THREE.Vector3(-14, 0, 0); }
+    if (side === 2) { p.position.set( off, alt(), -s); p.userData.vel = new THREE.Vector3(0, 0, 14); }
+    if (side === 3) { p.position.set( off, alt(),  s); p.userData.vel = new THREE.Vector3(0, 0, -14); }
     const a = Math.atan2(p.userData.vel.x, p.userData.vel.z);
     p.rotation.y = a;
   }

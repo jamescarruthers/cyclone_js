@@ -1,0 +1,13 @@
+{
+  "name": "turns",
+  "frames": 1000,
+  "events": [
+    { "frame": 250, "controls": { "up": true } },
+    { "frame": 400, "controls": { "up": false, "forward": true } },
+    { "frame": 450, "controls": { "left": true } },
+    { "frame": 560, "controls": { "left": false } },
+    { "frame": 620, "controls": { "right": true } },
+    { "frame": 740, "controls": { "right": false } },
+    { "frame": 820, "controls": { "forward": false } }
+  ]
+}

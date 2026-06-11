@@ -93,7 +93,9 @@ export function createMapView(world) {
       const p = worldToMap(helicopter.position);
       ctx.save();
       ctx.translate(p.x, p.y);
-      ctx.rotate(helicopter.rotation.y + Math.PI);
+      // World yaw is CCW about +Y with -Z = north (up on the map); canvas
+      // rotation is clockwise with +y down, so the sign flips.
+      ctx.rotate(-helicopter.rotation.y);
       ctx.fillStyle = '#ffd257';
       ctx.beginPath();
       ctx.moveTo(0, -6);
@@ -125,9 +127,9 @@ export function createCompass() {
   return {
     update(heading) {
       if (!el) return;
-      // heading is a yaw in radians (0 = +Z).  Convert to N/S/E/W letters.
-      // In our world, we treat -Z as North (top of map).
-      const deg = (THREE_DEG(heading) + 360) % 360;
+      // heading is the three.js yaw in radians (CCW about +Y, 0 = facing
+      // -Z = North).  Compass bearings increase clockwise, so negate.
+      const deg = ((-THREE_DEG(heading)) % 360 + 360) % 360;
       let card = 'N';
       if (deg < 22.5 || deg >= 337.5) card = 'N';
       else if (deg < 67.5)  card = 'NE';

@@ -1,0 +1,9 @@
+{
+  "name": "forward_flight",
+  "frames": 900,
+  "events": [
+    { "frame": 250, "controls": { "up": true } },
+    { "frame": 400, "controls": { "up": false, "forward": true } },
+    { "frame": 700, "controls": { "forward": false } }
+  ]
+}

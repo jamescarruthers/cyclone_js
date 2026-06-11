@@ -1,0 +1,11 @@
+{
+  "name": "cyclone_approach",
+  "frames": 6500,
+  "events": [
+    { "frame": 250, "controls": { "up": true } },
+    { "frame": 420, "controls": { "up": false, "left": true } },
+    { "frame": 442, "controls": { "left": false } },
+    { "frame": 460, "controls": { "forward": true } },
+    { "frame": 6400, "controls": { "forward": false } }
+  ]
+}
