@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { createWorld } from './world.js';
-import { createHelicopter, cellToWorld } from './helicopter.js';
+import { createHelicopter, cellToWorld, romXYToWorld } from './helicopter.js';
+import { islandAt } from './rom-physics.js';
+import { ISLAND_DATA } from './islands_data.js';
 import { createCyclone } from './cyclone.js';
 import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
@@ -93,11 +95,17 @@ scene.add(sun);
 scene.add(new THREE.AmbientLight(0x8fb4d4, 0.55));
 scene.add(new THREE.HemisphereLight(0xbfe0ff, 0x234d2e, 0.35));
 
-// Helicopter starts on BASE's helipad
+// Helicopter starts on BASE's helipad.  The pad sits at the centre of
+// BASE's "inner box" from its $F230 record — the island's landing strip
+// in authentic flight coordinates.
 const home = world.islands.find(i => i.isHome);
+const homeInner = ISLAND_DATA[world.islands.indexOf(home)].inner;
 const pad = createHelipad();
-pad.position.copy(home.topCenter);
-pad.position.y += 0.02;
+pad.position.set(
+  romXYToWorld((homeInner[0] + homeInner[1]) / 2),
+  home.topCenter.y + 0.02,
+  romXYToWorld((homeInner[2] + homeInner[3]) / 2),
+);
 scene.add(pad);
 
 const helicopter = createHelicopter();
@@ -110,7 +118,7 @@ const FUEL_BOOT_READY = 0x427C;
 const PAD_REST_Y = () => pad.position.y + 1.5;
 helicopter.rom.fuelGauge = FUEL_BOOT_READY;
 helicopter.setWorldPosition(new THREE.Vector3(
-  home.topCenter.x, PAD_REST_Y(), home.topCenter.z,
+  pad.position.x, PAD_REST_Y(), pad.position.z,
 ), { landed: true });
 scene.add(helicopter.group);
 
@@ -226,7 +234,7 @@ function loseLife(reason) {
   helicopter.rom.timerPrescaler = timerPrescaler;
   helicopter.rom.fuelGauge = FUEL_BOOT_READY;
   helicopter.setWorldPosition(new THREE.Vector3(
-    home.topCenter.x, PAD_REST_Y(), home.topCenter.z,
+    pad.position.x, PAD_REST_Y(), pad.position.z,
   ), { landed: true });
   state.noFuel = false;
   state.carried = 0;
@@ -319,8 +327,10 @@ function tick() {
     // arms refuelling and snaps altitude to the 8-unit grid.  Flying into
     // an island side, or descending to sea level ($7514), is fatal.
     if (helicopter.rom.landed !== 1) {
-      const over = world.islands.find(is =>
-        horizontalDistance(p, is.topCenter) < is.radius * 0.9);
+      // Exact over-island query: the ROM comparator at $76E5 against the
+      // record bounding boxes ($F230), not a visual-radius approximation.
+      const overIdx = islandAt(helicopter.rom.posX, helicopter.rom.posY);
+      const over = overIdx >= 0 ? world.islands[overIdx] : null;
       const groundY = over ? over.topCenter.y + 1.5 : 0;
       const byCyclone = helicopter.cyclone.dist < 3 ? ' — the cyclone tore you down' : '';
       if (over && p.y < groundY - 2.5) {

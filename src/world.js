@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ISLAND_DATA } from './islands_data.js';
+import { romXYToWorld, ROM_SCALE } from './helicopter.js';
 
 // Deterministic PRNG so the palms / rocks stay put between reloads.
 function mulberry32(seed) {
@@ -13,10 +14,23 @@ function mulberry32(seed) {
   };
 }
 
-// The original arranges islands on a 32 x 24 character grid.  We map that
-// directly into the 3D world so the relative layout matches the 1985 ROM.
-const GRID_W = 32, GRID_H = 24;
 export const WORLD_SIZE = 600;
+
+// Visual styling per island: [footprint, profile].  The silhouettes are
+// still hand-authored (the genuine 3D models live behind undecoded
+// renderer pointers in the $F230 records), but every island's POSITION
+// and EXTENT now comes byte-exact from its record's bounding box.
+const ISLAND_STYLE = {
+  'PEAK':           [0, 2],
+  'GIANTS GATEWAY': [1, 2],
+  'BONE':           [1, 1],
+  'ORTE ROCKS':     [2, 1],
+  'CLAW':           [2, 1],
+  'LUKELAND ISLES': [2, 0],
+  'LAGOON':         [0, 0],
+  'SKEG':           [0, 0],
+  'BASE':           [1, 1],
+};
 
 export function createWorld({ seed = 1 } = {}) {
   const group = new THREE.Group();
@@ -54,17 +68,25 @@ export function createWorld({ seed = 1 } = {}) {
   const sea = new THREE.Mesh(seaGeo, seaMat);
   group.add(sea);
 
-  // -------- Islands at their extracted ROM positions ------------------
+  // -------- Islands at their byte-exact ROM positions ------------------
+  // Position and extent come straight from the $F230 record bounding
+  // boxes (flight coordinates), mapped into the world with the same
+  // transform the helicopter uses — so what you see is exactly what the
+  // ROM's island-detection comparator at $76E5 tests against.
+  // Order matters: world.islands[i] corresponds to islandAt() index i.
   const islands = [];
-  for (const d of ISLAND_DATA) {
-    const x = (d.col - (GRID_W - 1) / 2) / (GRID_W - 1) * WORLD_SIZE * 0.9;
-    const z = (d.row - (GRID_H - 1) / 2) / (GRID_H - 1) * WORLD_SIZE * 0.9;
-    const center = new THREE.Vector3(x, 0, z);
+  for (let i = 0; i < ISLAND_DATA.length; i++) {
+    const d = ISLAND_DATA[i];
+    const center = new THREE.Vector3(
+      romXYToWorld((d.x0 + d.x1) / 2), 0, romXYToWorld((d.y0 + d.y1) / 2),
+    );
+    const rx = (d.x1 - d.x0) / 2 * ROM_SCALE;
+    const rz = (d.y1 - d.y0) / 2 * ROM_SCALE;
     const isHome = (d.name === 'BASE');
-    const base = 12 + Math.max(d.wHint, d.hHint) * 0.9 + (isHome ? 6 : 0);
-    const is = makeShapedIsland(center, base, d.shape, isHome, rand);
+    const style = ISLAND_STYLE[d.name] ?? [i % 3, 1];
+    const is = makeShapedIsland(center, rx, rz, style, isHome, rand);
     is.name = d.name;
-    is.col = d.col; is.row = d.row;
+    is.bounds = d;
     islands.push(is);
   }
   for (const is of islands) group.add(is.mesh);
@@ -107,37 +129,27 @@ export function createWorld({ seed = 1 } = {}) {
     }
   }
 
-  return { group, islands, update, gridToWorld, worldSize: WORLD_SIZE };
-}
-
-export function gridToWorld(col, row) {
-  const x = (col - (GRID_W - 1) / 2) / (GRID_W - 1) * WORLD_SIZE * 0.9;
-  const z = (row - (GRID_H - 1) / 2) / (GRID_H - 1) * WORLD_SIZE * 0.9;
-  return { x, z };
+  return { group, islands, update, worldSize: WORLD_SIZE };
 }
 
 
-// Nine distinct island silhouettes, keyed off the ROM's 2-byte shape code.
-// Code[0] (0/1/2) = footprint style: round / elongated / jagged.
-// Code[1] (0/1/2) = profile style:   flat / hill / peak.
-//
-// These are hand-authored approximations of the original sprite outlines —
-// not byte-exact, but each ROM shape pair renders a visibly different
-// silhouette so PEAK looks different from LAGOON looks different from CLAW.
-function makeShapedIsland(center, radiusBase, shape, isHome, rand) {
-  const [footprint, profile] = shape;
+// Nine hand-authored island silhouettes.  style = [footprint, profile]:
+// footprint (0/1/2) = round / smooth / jagged-lobed surface texture,
+// profile   (0/1/2) = flat atoll / rounded hill / sharp peak.
+// The semi-axes rx/rz come from the authentic record bounding box.
+function makeShapedIsland(center, rx, rz, style, isHome, rand) {
+  const [footprint, profile] = style;
 
   const grp = new THREE.Group();
   grp.position.copy(center);
 
-  // Choose shape parameters
   const FOOTPRINTS = [
     // 0: round
-    { rx: 1.0, rz: 1.0, lobes: 0, jitter: 0.06 },
-    // 1: elongated (ridge)
-    { rx: 1.35, rz: 0.75, lobes: 0, jitter: 0.08 },
+    { lobes: 0, jitter: 0.06 },
+    // 1: smooth
+    { lobes: 0, jitter: 0.08 },
     // 2: jagged / lobed (claw / rocks)
-    { rx: 1.1, rz: 1.1, lobes: 4, jitter: 0.22 },
+    { lobes: 4, jitter: 0.22 },
   ];
   const PROFILES = [
     // 0: flat atoll
@@ -150,9 +162,7 @@ function makeShapedIsland(center, radiusBase, shape, isHome, rand) {
   const fp = FOOTPRINTS[footprint];
   const pf = PROFILES[profile];
 
-  const rx = radiusBase * fp.rx + (isHome ? 4 : 0);
-  const rz = radiusBase * fp.rz + (isHome ? 4 : 0);
-  const h  = pf.height + (isHome ? 2 : 0);
+  const h = pf.height + (isHome ? 2 : 0);
 
   // Underwater base — a cone of rock
   const baseR = Math.max(rx, rz) * 1.3;
@@ -197,7 +207,14 @@ function makeShapedIsland(center, radiusBase, shape, isHome, rand) {
   }
 
   const topCenter = new THREE.Vector3(center.x, h, center.z);
-  return { mesh: grp, center: center.clone(), radius: Math.max(rx, rz), height: h, topCenter, isHome, shape };
+  // radius = the inscribed (safe) radius, used for decoration placement
+  // and HUD proximity; exact over-island queries use islandAt() on the
+  // record bounding box instead.
+  return {
+    mesh: grp, center: center.clone(),
+    radius: Math.min(rx, rz), rx, rz,
+    height: h, topCenter, isHome,
+  };
 }
 
 
@@ -305,70 +322,6 @@ function makeFootprintRing(rx, rz, lobes, jitter, thickness, rand) {
   return geo;
 }
 
-
-function makeIsland(center, radius, height, isHome, rand, shape) {
-  const grp = new THREE.Group();
-  grp.position.copy(center);
-
-  // Underwater base
-  const baseGeo = new THREE.ConeGeometry(radius * 1.4, height + 14, 24, 1, false);
-  baseGeo.translate(0, -(height + 14) / 2 + height, 0);
-  const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a5a80, roughness: 1 });
-  grp.add(new THREE.Mesh(baseGeo, baseMat));
-
-  // Sandy beach band
-  const beachGeo = new THREE.CylinderGeometry(radius * 1.05, radius * 1.15, 0.8, 32);
-  beachGeo.translate(0, 0.4, 0);
-  const beachMat = new THREE.MeshStandardMaterial({ color: 0xe8d9a8, roughness: 1 });
-  grp.add(new THREE.Mesh(beachGeo, beachMat));
-
-  // Main island body with some randomised bumps.  Shape codes:
-  //   (2,x) -> tall peak (PEAK, BANANA)
-  //   (1,x) -> medium
-  //   (0,x) -> low / flat
-  const peakBoost = shape[0] === 2 ? 1.6 : (shape[0] === 1 ? 1.0 : 0.5);
-  const bodyH = height * peakBoost;
-  const bodyGeo = new THREE.CylinderGeometry(radius * 0.92, radius * 1.05, bodyH, 28, 4);
-  const vp = bodyGeo.attributes.position;
-  for (let i = 0; i < vp.count; i++) {
-    const y = vp.getY(i);
-    if (y > bodyH * 0.3) {
-      vp.setX(i, vp.getX(i) * (0.92 + rand() * 0.12));
-      vp.setZ(i, vp.getZ(i) * (0.92 + rand() * 0.12));
-      vp.setY(i, y + (rand() - 0.3) * 1.5);
-    }
-  }
-  bodyGeo.computeVertexNormals();
-  bodyGeo.translate(0, bodyH / 2 + 0.4, 0);
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: isHome ? 0x4f9a54 : 0x4a8a47,
-    roughness: 0.95, flatShading: true,
-  });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  grp.add(body);
-
-  const palmCount = Math.floor(2 + rand() * 5);
-  for (let i = 0; i < palmCount; i++) {
-    const palm = makePalm(rand);
-    const a = rand() * Math.PI * 2;
-    const r = rand() * radius * 0.75;
-    palm.position.set(Math.cos(a) * r, bodyH + 0.4, Math.sin(a) * r);
-    grp.add(palm);
-  }
-  for (let i = 0; i < 3 + Math.floor(rand()*3); i++) {
-    const rockGeo = new THREE.DodecahedronGeometry(0.6 + rand() * 1.1, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x777266, flatShading: true, roughness: 1 });
-    const rock = new THREE.Mesh(rockGeo, rockMat);
-    const a = rand() * Math.PI * 2;
-    const r = rand() * radius * 0.85;
-    rock.position.set(Math.cos(a)*r, bodyH + 0.3, Math.sin(a)*r);
-    rock.rotation.set(rand()*2, rand()*2, rand()*2);
-    grp.add(rock);
-  }
-
-  const topCenter = new THREE.Vector3(center.x, bodyH + 0.8, center.z);
-  return { mesh: grp, center: center.clone(), radius, height: bodyH, topCenter, isHome };
-}
 
 function makePalm(rand) {
   const g = new THREE.Group();

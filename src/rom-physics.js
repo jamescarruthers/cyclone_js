@@ -104,6 +104,33 @@ export function createRomState() {
 }
 
 // ---------------------------------------------------------------------------
+// Island detection ($76E5): the renderer walks the 20-byte records at
+// $F230 and matches the helicopter position against each island's
+// bounding box — page bytes (+0/+1) must equal the position high bytes,
+// then the low bytes must satisfy min <= lo <= max per axis (the max is
+// inclusive via a DEC A before the compare, with 8-bit wraparound).
+// First match wins; $FF terminates the table.  Returns the record index
+// or -1 for open sea.  Verified probe-for-probe against the routine
+// running in the emulator (test/island-parity.test.mjs).
+import { ISLAND_DATA } from './islands_data.js';
+
+export function islandAt(posX, posY) {
+  const xh = (posX >> 8) & 0xFF, xl = posX & 0xFF;
+  const yh = (posY >> 8) & 0xFF, yl = posY & 0xFF;
+  for (let i = 0; i < ISLAND_DATA.length; i++) {
+    const d = ISLAND_DATA[i];
+    if (xh !== d.xPage) continue;                  // $76E9-$76EF
+    if (yh !== d.yPage) continue;                  // $76F1-$76F7
+    if (xl < d.xMinLo) continue;                   // $76F9-$76FF
+    if (((xl - 1) & 0xFF) >= d.xMaxLo) continue;   // $7701-$7705 (DEC A)
+    if (yl < d.yMinLo) continue;                   // $7707-$770D
+    if (((yl - 1) & 0xFF) >= d.yMaxLo) continue;   // $770F-$7713
+    return i;                                      // $7724: ($7552) = IX
+  }
+  return -1;
+}
+
+// ---------------------------------------------------------------------------
 // The cyclone ($909E-$910E) and its wind ($9111-$9138 + $7378).
 //
 // The cyclone lives at a map cell ($754B/$754C; cell = position >> 5,

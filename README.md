@@ -109,6 +109,17 @@ and the timer (`$8284/$8292`) steps every 255 iterations giving a
 descent ramp of 3 crashes (`$8AB7`), gentler touchdowns land, arm
 refuelling and snap altitude to the 8-unit grid (`$8AEB-$8B0D`).
 
+**Island placement is byte-exact** too: the 20-byte records at `$F230`
+turn out to hold each island's bounding box in flight coordinates
+(page byte + min/max per axis — the bytes previously misread as "shape
+codes" are the position page).  The world builder places every island
+from its real box, and `islandAt()` in `src/rom-physics.js` is an exact
+port of the detection comparator at `$76E5`, verified probe-for-probe
+against the routine running in the emulator (3,000+ positions including
+every box edge ±1).  The helipad sits on BASE's record "inner box" —
+its landing strip.  Only the 3D silhouettes remain hand-authored (the
+genuine models live behind undecoded renderer pointers).
+
 So is the **cyclone** (`$8370/$909E-$9176/$7378`, trace-verified): it
 spawns in a random map corner, random-walks one cell per 25 iterations
 under "direction regimes" re-rolled every 9 moves (PRNG `$8B74`, ported
