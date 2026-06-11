@@ -40,6 +40,9 @@ const worldToRom = (w) => (Math.round(w / ROM_SCALE) + ROM_CENTER) & 0xFFFF;
 
 export const CELL_SIZE_WORLD = 32 * ROM_SCALE;
 export const cellToWorld = (c) => (c * 32 + 16 - ROM_CENTER) * ROM_SCALE;
+// Flat ROM-coordinate (0..704) to world conversion, for placing world
+// geometry (islands) at their authentic positions.
+export const romXYToWorld = (v) => (v - ROM_CENTER) * ROM_SCALE;
 
 export function createHelicopter({ seed } = {}) {
   const group = new THREE.Group();   // world transform (yaw here)
