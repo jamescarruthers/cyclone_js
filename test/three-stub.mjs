@@ -39,6 +39,26 @@ export class Mesh extends Object3D {
   constructor(geometry, material) { super(); this.geometry = geometry; this.material = material; }
 }
 
+export class Color {
+  constructor(hex = 0) {
+    this.r = ((hex >> 16) & 255) / 255;
+    this.g = ((hex >> 8) & 255) / 255;
+    this.b = (hex & 255) / 255;
+  }
+  clone() { const c = new Color(); c.r = this.r; c.g = this.g; c.b = this.b; return c; }
+  multiplyScalar(s) { this.r *= s; this.g *= s; this.b *= s; return this; }
+}
+
+export class BufferGeometry {
+  constructor() { this.attributes = {}; }
+  setAttribute(name, attr) { this.attributes[name] = attr; return this; }
+  setIndex() { return this; }
+  computeVertexNormals() {}
+}
+export class Float32BufferAttribute {
+  constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; }
+}
+
 const inertGeo = () => ({ translate() { return this; }, rotateX() { return this; }, attributes: {} });
 export class SphereGeometry { constructor() { return inertGeo(); } }
 export class CylinderGeometry { constructor() { return inertGeo(); } }

@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { ISLAND_DATA } from './islands_data.js';
 import { romXYToWorld, ROM_SCALE } from './helicopter.js';
+import { heightmapFor } from './terrain.js';
+
+// World height of one terrain level (alt/4 units -> altitude*ALT_SCALE):
+// level * 4 ROM altitude units * (ROM_SCALE * 0.8) world per unit.
+const LEVEL_Y = 4 * ROM_SCALE * 0.8;
 
 // Deterministic PRNG so the palms / rocks stay put between reloads.
 function mulberry32(seed) {
@@ -15,22 +20,6 @@ function mulberry32(seed) {
 }
 
 export const WORLD_SIZE = 600;
-
-// Visual styling per island: [footprint, profile].  The silhouettes are
-// still hand-authored (the genuine 3D models live behind undecoded
-// renderer pointers in the $F230 records), but every island's POSITION
-// and EXTENT now comes byte-exact from its record's bounding box.
-const ISLAND_STYLE = {
-  'PEAK':           [0, 2],
-  'GIANTS GATEWAY': [1, 2],
-  'BONE':           [1, 1],
-  'ORTE ROCKS':     [2, 1],
-  'CLAW':           [2, 1],
-  'LUKELAND ISLES': [2, 0],
-  'LAGOON':         [0, 0],
-  'SKEG':           [0, 0],
-  'BASE':           [1, 1],
-};
 
 export function createWorld({ seed = 1 } = {}) {
   const group = new THREE.Group();
@@ -68,25 +57,19 @@ export function createWorld({ seed = 1 } = {}) {
   const sea = new THREE.Mesh(seaGeo, seaMat);
   group.add(sea);
 
-  // -------- Islands at their byte-exact ROM positions ------------------
-  // Position and extent come straight from the $F230 record bounding
-  // boxes (flight coordinates), mapped into the world with the same
-  // transform the helicopter uses — so what you see is exactly what the
-  // ROM's island-detection comparator at $76E5 tests against.
+  // -------- Islands: authentic terrain ---------------------------------
+  // Geometry is built straight from the surveyed heightmaps — the
+  // terraced terrain the 1985 renderer actually tests collisions and
+  // landings against (one terrace = 4 altitude units = LEVEL_Y world).
   // Order matters: world.islands[i] corresponds to islandAt() index i.
   const islands = [];
   for (let i = 0; i < ISLAND_DATA.length; i++) {
     const d = ISLAND_DATA[i];
-    const center = new THREE.Vector3(
-      romXYToWorld((d.x0 + d.x1) / 2), 0, romXYToWorld((d.y0 + d.y1) / 2),
-    );
-    const rx = (d.x1 - d.x0) / 2 * ROM_SCALE;
-    const rz = (d.y1 - d.y0) / 2 * ROM_SCALE;
-    const isHome = (d.name === 'BASE');
-    const style = ISLAND_STYLE[d.name] ?? [i % 3, 1];
-    const is = makeShapedIsland(center, rx, rz, style, isHome, rand);
+    const hm = heightmapFor(i);
+    const is = makeTerrainIsland(d, hm, d.name === 'BASE', rand);
     is.name = d.name;
     is.bounds = d;
+    is.hm = hm;
     islands.push(is);
   }
   for (const is of islands) group.add(is.mesh);
@@ -133,195 +116,103 @@ export function createWorld({ seed = 1 } = {}) {
 }
 
 
-// Nine hand-authored island silhouettes.  style = [footprint, profile]:
-// footprint (0/1/2) = round / smooth / jagged-lobed surface texture,
-// profile   (0/1/2) = flat atoll / rounded hill / sharp peak.
-// The semi-axes rx/rz come from the authentic record bounding box.
-function makeShapedIsland(center, rx, rz, style, isHome, rand) {
-  const [footprint, profile] = style;
-
+// Builds an island mesh directly from its surveyed heightmap: terraced
+// flat-topped terrain with cliff walls, exactly the height field the
+// 1985 renderer tests collisions and landings against.  Levels are
+// altitude/4 units; one level = LEVEL_Y world units.  Colours by level:
+// sand at the waterline, grasses, rock, and the dark "structure" levels
+// (>= 14) that the landing comparator can never clear.
+function makeTerrainIsland(d, hm, isHome, rand) {
   const grp = new THREE.Group();
-  grp.position.copy(center);
+  const cellW = hm.step * ROM_SCALE;
 
-  const FOOTPRINTS = [
-    // 0: round
-    { lobes: 0, jitter: 0.06 },
-    // 1: smooth
-    { lobes: 0, jitter: 0.08 },
-    // 2: jagged / lobed (claw / rocks)
-    { lobes: 4, jitter: 0.22 },
+  const sample = (i, j) =>
+    (i < 0 || j < 0 || i >= hm.w || j >= hm.h) ? 0 : parseInt(hm.rows[j][i], 36);
+
+  const COLORS = [
+    [1,  new THREE.Color(0xd8c388)],   // beach
+    [2,  new THREE.Color(0x9fb24e)],   // low grass
+    [5,  new THREE.Color(0x4a8a47)],   // grass
+    [9,  new THREE.Color(0x3a6e3a)],   // high grass
+    [13, new THREE.Color(0x8a8576)],   // rock
+    [99, new THREE.Color(0x55514a)],   // structures / unclearable
   ];
-  const PROFILES = [
-    // 0: flat atoll
-    { height: 2.5, taperTop: 0.85, crown: 'plateau' },
-    // 1: rounded hill
-    { height: 6,   taperTop: 0.55, crown: 'dome' },
-    // 2: sharp peak
-    { height: 14,  taperTop: 0.15, crown: 'peak' },
-  ];
-  const fp = FOOTPRINTS[footprint];
-  const pf = PROFILES[profile];
+  const colorFor = (v) => COLORS.find(([max]) => v <= max)[1];
+  const wallColor = (c) => c.clone().multiplyScalar(0.72);
 
-  const h = pf.height + (isHome ? 2 : 0);
+  const pos = [], nrm = [], col = [];
+  const quad = (a, b, c2, dd, n, color) => {
+    for (const p of [a, b, c2, a, c2, dd]) pos.push(p[0], p[1], p[2]);
+    for (let k = 0; k < 6; k++) { nrm.push(n[0], n[1], n[2]); col.push(color.r, color.g, color.b); }
+  };
 
-  // Underwater base — a cone of rock
-  const baseR = Math.max(rx, rz) * 1.3;
-  const baseGeo = new THREE.ConeGeometry(baseR, h + 14, 24, 1, false);
-  baseGeo.translate(0, -(h + 14) / 2 + h, 0);
-  const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a5a80, roughness: 1 });
-  grp.add(new THREE.Mesh(baseGeo, baseMat));
-
-  // Beach ring using the same footprint
-  const beachMat = new THREE.MeshStandardMaterial({ color: 0xe8d9a8, roughness: 1 });
-  const beachGeo = makeFootprintRing(rx * 1.08, rz * 1.08, fp.lobes, fp.jitter, 0.8, rand);
-  grp.add(new THREE.Mesh(beachGeo, beachMat));
-
-  // Island body — profile extrusion.  We build it in rings from base to crown.
-  const bodyGeo = makeShapedBody(rx, rz, h, pf, fp, rand);
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: isHome ? 0x4f9a54 : 0x4a8a47,
-    roughness: 0.95, flatShading: true,
-  });
-  grp.add(new THREE.Mesh(bodyGeo, bodyMat));
-
-  // Decorate
-  const decoR = Math.min(rx, rz);
-  const palmCount = profile === 2 ? 0 : Math.floor(2 + rand() * 5);
-  for (let i = 0; i < palmCount; i++) {
-    const palm = makePalm(rand);
-    const a = rand() * Math.PI * 2;
-    const r = rand() * decoR * 0.65;
-    palm.position.set(Math.cos(a) * r, h - 0.4, Math.sin(a) * r);
-    grp.add(palm);
-  }
-  const rocks = profile === 2 ? 6 : 3 + Math.floor(rand()*3);
-  for (let i = 0; i < rocks; i++) {
-    const rockGeo = new THREE.DodecahedronGeometry(0.6 + rand() * 1.2, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x777266, flatShading: true, roughness: 1 });
-    const rock = new THREE.Mesh(rockGeo, rockMat);
-    const a = rand() * Math.PI * 2;
-    const r = rand() * decoR * 0.85;
-    rock.position.set(Math.cos(a)*r, h - 0.2, Math.sin(a)*r);
-    rock.rotation.set(rand()*2, rand()*2, rand()*2);
-    grp.add(rock);
+  const landCells = [];
+  let top = { v: 0, x: 0, z: 0 };
+  for (let j = 0; j < hm.h; j++) {
+    for (let i = 0; i < hm.w; i++) {
+      const v = sample(i, j);
+      if (v === 0) continue;
+      const x0 = romXYToWorld(hm.x0 + i * hm.step) - cellW / 2;
+      const z0 = romXYToWorld(hm.y0 + j * hm.step) - cellW / 2;
+      const x1 = x0 + cellW, z1 = z0 + cellW;
+      const y = v * LEVEL_Y;
+      const c = colorFor(v);
+      quad([x0, y, z0], [x0, y, z1], [x1, y, z1], [x1, y, z0], [0, 1, 0], c);
+      // cliff walls down to each lower neighbour (or the sea)
+      const wc = wallColor(c);
+      const sides = [
+        [sample(i, j - 1), [x0, z0], [x1, z0], [0, 0, -1]],   // north
+        [sample(i + 1, j), [x1, z0], [x1, z1], [1, 0, 0]],    // east
+        [sample(i, j + 1), [x1, z1], [x0, z1], [0, 0, 1]],    // south
+        [sample(i - 1, j), [x0, z1], [x0, z0], [-1, 0, 0]],   // west
+      ];
+      for (const [nv, p0, p1, n] of sides) {
+        if (nv >= v) continue;
+        const yLo = nv * LEVEL_Y;
+        quad([p0[0], y, p0[1]], [p1[0], y, p1[1]],
+             [p1[0], yLo, p1[1]], [p0[0], yLo, p0[1]], n, wc);
+      }
+      const romX = hm.x0 + i * hm.step, romY = hm.y0 + j * hm.step;
+      if (v >= 2 && v <= 9) {
+        landCells.push({
+          x: romX, y: romY, v,
+          wx: romXYToWorld(romX), wy: v * LEVEL_Y, wz: romXYToWorld(romY),
+        });
+      }
+      if (v > top.v) top = { v, x: romXYToWorld(romX), z: romXYToWorld(romY) };
+    }
   }
 
-  const topCenter = new THREE.Vector3(center.x, h, center.z);
-  // radius = the inscribed (safe) radius, used for decoration placement
-  // and HUD proximity; exact over-island queries use islandAt() on the
-  // record bounding box instead.
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true });
+  grp.add(new THREE.Mesh(geo, mat));
+
+  // Decoration on real land cells: palms on the grassy levels, rocks on
+  // the high ground.
+  for (const cell of landCells) {
+    if (cell.v >= 2 && cell.v <= 6 && rand() < 0.05) {
+      const palm = makePalm(rand);
+      palm.position.set(romXYToWorld(cell.x), cell.v * LEVEL_Y, romXYToWorld(cell.y));
+      grp.add(palm);
+    }
+  }
+
+  const cx = romXYToWorld((d.x0 + d.x1) / 2), cz = romXYToWorld((d.y0 + d.y1) / 2);
+  const rx = (d.x1 - d.x0) / 2 * ROM_SCALE;
+  const rz = (d.y1 - d.y0) / 2 * ROM_SCALE;
   return {
-    mesh: grp, center: center.clone(),
+    mesh: grp,
+    center: new THREE.Vector3(cx, 0, cz),
     radius: Math.min(rx, rz), rx, rz,
-    height: h, topCenter, isHome,
+    height: top.v * LEVEL_Y,
+    topCenter: new THREE.Vector3(top.x, top.v * LEVEL_Y, top.z),
+    isHome,
+    landCells,
   };
 }
-
-
-// Builds an extruded island body from base to crown using a specified
-// profile & footprint.
-function makeShapedBody(rx, rz, height, pf, fp, rand) {
-  const SEGMENTS = 32;
-  const LAYERS = 8;
-  const verts = [];
-  const norms = [];
-  const idx = [];
-
-  function footRadius(angle, layerT) {
-    // layerT 0 = base, 1 = top.  Taper controls upper pinch.
-    const t = layerT;
-    const taper = 1 - t * (1 - pf.taperTop);
-    const lobeAmp = fp.lobes > 0 ? fp.jitter * (1 - t * 0.5) : 0;
-    const lobe    = fp.lobes > 0 ? Math.cos(angle * fp.lobes) * lobeAmp : 0;
-    const jitter  = (Math.sin(angle * 7) + Math.cos(angle * 11)) * fp.jitter * (1 - t * 0.5);
-    return (1 + lobe + jitter * 0.3) * taper;
-  }
-
-  // Generate rings
-  for (let ly = 0; ly <= LAYERS; ly++) {
-    const t = ly / LAYERS;
-    // Profile curve: flat rises linearly, hill curves smoothly, peak spikes
-    let y;
-    if (pf.crown === 'plateau') {
-      y = height * (t < 0.15 ? t / 0.15 * 0.8 : 0.8 + (t - 0.15) * 0.2);
-    } else if (pf.crown === 'dome') {
-      y = height * Math.sqrt(t);
-    } else {
-      y = height * t * t;
-    }
-    for (let s = 0; s < SEGMENTS; s++) {
-      const a = (s / SEGMENTS) * Math.PI * 2;
-      const r = footRadius(a, t);
-      const x = Math.cos(a) * rx * r;
-      const z = Math.sin(a) * rz * r;
-      verts.push(x, y + 0.4, z);
-      // Approximate normals pointing outward (good enough with flatShading)
-      norms.push(Math.cos(a), 0.3, Math.sin(a));
-    }
-  }
-  // Close crown
-  const crownIdx = verts.length / 3;
-  verts.push(0, height + 0.45, 0);
-  norms.push(0, 1, 0);
-
-  // Triangulate sides
-  for (let ly = 0; ly < LAYERS; ly++) {
-    for (let s = 0; s < SEGMENTS; s++) {
-      const a = ly * SEGMENTS + s;
-      const b = ly * SEGMENTS + ((s + 1) % SEGMENTS);
-      const c = (ly + 1) * SEGMENTS + s;
-      const d = (ly + 1) * SEGMENTS + ((s + 1) % SEGMENTS);
-      idx.push(a, c, b,  b, c, d);
-    }
-  }
-  // Cap
-  for (let s = 0; s < SEGMENTS; s++) {
-    const a = LAYERS * SEGMENTS + s;
-    const b = LAYERS * SEGMENTS + ((s + 1) % SEGMENTS);
-    idx.push(a, crownIdx, b);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geo.setIndex(idx);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// Low-lying beach ring follows the same footprint curve.
-function makeFootprintRing(rx, rz, lobes, jitter, thickness, rand) {
-  const SEGMENTS = 40;
-  const verts = [];
-  const idx = [];
-  function r(a, outward) {
-    const lobe = lobes > 0 ? Math.cos(a * lobes) * jitter : 0;
-    const jit  = (Math.sin(a * 7) + Math.cos(a * 11)) * jitter * 0.3;
-    return 1 + lobe + jit + (outward ? 0.05 : 0);
-  }
-  for (let s = 0; s < SEGMENTS; s++) {
-    const a = (s / SEGMENTS) * Math.PI * 2;
-    // Outer ring
-    const r2 = r(a, true);
-    verts.push(Math.cos(a) * rx * r2, 0,               Math.sin(a) * rz * r2);
-    verts.push(Math.cos(a) * rx * r2, thickness,       Math.sin(a) * rz * r2);
-  }
-  for (let s = 0; s < SEGMENTS; s++) {
-    const s2 = (s + 1) % SEGMENTS;
-    const a0 = s  * 2;
-    const a1 = s  * 2 + 1;
-    const b0 = s2 * 2;
-    const b1 = s2 * 2 + 1;
-    idx.push(a0, a1, b1,  a0, b1, b0);
-    // top cap toward center
-    idx.push(a1, b1, a1); // degenerate, harmless — we don't need a true top cap
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geo.setIndex(idx);
-  geo.computeVertexNormals();
-  return geo;
-}
-
 
 function makePalm(rand) {
   const g = new THREE.Group();

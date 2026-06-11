@@ -118,17 +118,12 @@ function makePlane() {
 export function createSurvivors(world, count = 6) {
   const group = new THREE.Group();
   const survivors = [];
-  const pickable = world.islands.filter(i => !i.isHome);
+  const pickable = world.islands.filter(i => !i.isHome && i.landCells.length > 0);
   for (let i = 0; i < count; i++) {
     const island = pickable[i % pickable.length];
+    const cell = island.landCells[Math.floor(Math.random() * island.landCells.length)];
     const s = makeSurvivor();
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.random() * island.radius * 0.6;
-    s.position.set(
-      island.topCenter.x + Math.cos(a) * r,
-      island.topCenter.y + 0.9,
-      island.topCenter.z + Math.sin(a) * r,
-    );
+    s.position.set(cell.wx, cell.wy + 0.9, cell.wz);
     s.userData = { rescued: false, island, bobPhase: Math.random() * Math.PI * 2 };
     group.add(s);
     survivors.push(s);
