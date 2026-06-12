@@ -117,8 +117,18 @@ from its real box, and `islandAt()` in `src/rom-physics.js` is an exact
 port of the detection comparator at `$76E5`, verified probe-for-probe
 against the routine running in the emulator (3,000+ positions including
 every box edge ±1).  The helipad sits on BASE's record "inner box" —
-its landing strip.  Only the 3D silhouettes remain hand-authored (the
-genuine models live behind undecoded renderer pointers).
+its landing strip.
+
+**And so are the island shapes**: `tools/extract_heightmaps.mjs`
+teleports the helicopter across every island inside the emulator and
+samples the renderer's terrain table at `$7A8B` (the height field the
+landing logic at `$8A7A` really tests, in altitude/4 units) — 19,000+
+probes, snapshot-isolated and fully reproducible.  The world geometry
+is terraced terrain built from those surveyed heightmaps; terrain
+collision, landing heights, the map-screen coastlines, and crate /
+survivor placement all use the same data.  The helicopter fuselage is
+a voxel extrusion of the genuine 24x24 sprite from the 16-rotation
+table at `$E8E8`.
 
 So is the **cyclone** (`$8370/$909E-$9176/$7378`, trace-verified): it
 spawns in a random map corner, random-walks one cell per 25 iterations

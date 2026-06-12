@@ -44,48 +44,81 @@ export const cellToWorld = (c) => (c * 32 + 16 - ROM_CENTER) * ROM_SCALE;
 // geometry (islands) at their authentic positions.
 export const romXYToWorld = (v) => (v - ROM_CENTER) * ROM_SCALE;
 
+// The genuine 1985 helicopter: side-profile sprite frame from the
+// 16-rotation table at $E8E8 (72 bytes per frame, stored column-major,
+// 24x24 px; this is the East-facing profile, cropped to content).
+// The fuselage mesh below is a voxel extrusion of these exact pixels.
+const HELI_SPRITE = [
+  '............#...........',
+  '.........###.###........',
+  '###.....####.######.....',
+  '###################.#...',
+  '###################.#...',
+  '#####################...',
+  '##...################...',
+  '##....#####.#.#.####....',
+  '.......###############..',
+  '...........#####........',
+  '...........#####........',
+];
+
 export function createHelicopter({ seed } = {}) {
   const group = new THREE.Group();   // world transform (yaw here)
   const body  = new THREE.Group();   // cosmetic tilt
+  // The voxel mesh's skid base sits at local y=0, so the group origin is
+  // the ground-contact point (matching the ROM's altitude semantics).
+  body.position.y = 0.05;
   group.add(body);
 
-  // --- mesh -------------------------------------------------------
-  const yellow = new THREE.MeshStandardMaterial({ color: 0xffcc33, roughness: 0.4, metalness: 0.3, flatShading: true });
-  const dark   = new THREE.MeshStandardMaterial({ color: 0x333842, roughness: 0.7, metalness: 0.4, flatShading: true });
-  const glass  = new THREE.MeshStandardMaterial({ color: 0x6dbcd8, roughness: 0.1, metalness: 0.2, transparent: true, opacity: 0.55 });
-  const blade  = new THREE.MeshStandardMaterial({ color: 0x202128, roughness: 0.3, metalness: 0.7 });
+  // --- mesh: voxel extrusion of the authentic sprite ----------------
+  // Each set pixel of the $E8E8 side-profile frame becomes a voxel;
+  // the fuselage band is widened laterally, everything else stays a
+  // thin slab.  Forward is -Z (the sprite's nose points East/right).
+  const PX = 0.3;
+  const yellow = new THREE.Color(0xffcc33);
+  const dark   = new THREE.Color(0x333842);
+  const glass  = new THREE.Color(0x77b9d6);
 
-  const shell = new THREE.Mesh(new THREE.SphereGeometry(1.4, 16, 12), yellow);
-  shell.scale.set(1.3, 1.0, 1.7);
-  body.add(shell);
-  const cab = new THREE.Mesh(new THREE.SphereGeometry(1.15, 14, 10), glass);
-  cab.scale.set(1.05, 0.85, 1.25);
-  cab.position.set(0, 0.15, 1.1);
-  body.add(cab);
-  const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.08, 3.2, 8), yellow);
-  boom.rotation.x = Math.PI / 2;
-  boom.position.set(0, 0.25, -2.2);
-  body.add(boom);
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.9, 0.6), yellow);
-  fin.position.set(0, 0.8, -3.5);
-  body.add(fin);
-  for (const side of [-1, 1]) {
-    const skid = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.6, 8), dark);
-    skid.rotation.x = Math.PI / 2;
-    skid.position.set(side * 0.9, -1.2, 0);
-    body.add(skid);
-    for (const z of [-0.9, 0.9]) {
-      const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.9, 6), dark);
-      strut.position.set(side * 0.9, -0.75, z);
-      body.add(strut);
+  const vox = { pos: [], nrm: [], col: [] };
+  const FACES = [
+    [[1,0,0],  [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]]],
+    [[-1,0,0], [[-1,-1,1],[-1,1,1],[-1,1,-1],[-1,-1,-1]]],
+    [[0,1,0],  [[-1,1,-1],[1,1,-1],[1,1,1],[-1,1,1]]],
+    [[0,-1,0], [[-1,-1,1],[1,-1,1],[1,-1,-1],[-1,-1,-1]]],
+    [[0,0,1],  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]],
+    [[0,0,-1], [[-1,1,-1],[1,1,-1],[1,-1,-1],[-1,-1,-1]]],
+  ];
+  function voxel(cx, cy, cz, sx, sy, sz, color) {
+    for (const [n, corners] of FACES) {
+      const p = corners.map(([a,b,c]) => [cx + a*sx/2, cy + b*sy/2, cz + c*sz/2]);
+      for (const v of [p[0], p[1], p[2], p[0], p[2], p[3]]) vox.pos.push(...v);
+      for (let k = 0; k < 6; k++) { vox.nrm.push(...n); vox.col.push(color.r, color.g, color.b); }
     }
   }
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.25, 8), dark);
-  hub.position.set(0, 1.5, 0);
-  body.add(hub);
+  const ROWS = HELI_SPRITE.length;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < 24; c++) {
+      if (HELI_SPRITE[r][c] !== '#') continue;
+      const y = (ROWS - 1 - r) * PX + PX / 2;
+      const z = -(c - 11.5) * PX;
+      const isBody  = r >= 2 && r <= 8 && c >= 4 && c <= 19;
+      const isGlass = r >= 3 && r <= 5 && c >= 16 && c <= 19;
+      const isDark  = r <= 1 || r >= 9 || c <= 2;
+      const w = isBody ? 1.7 : 0.5;
+      voxel(0, y, z, w, PX, PX, isGlass ? glass : isDark ? dark : yellow);
+    }
+  }
+  const voxGeo = new THREE.BufferGeometry();
+  voxGeo.setAttribute('position', new THREE.Float32BufferAttribute(vox.pos, 3));
+  voxGeo.setAttribute('normal',   new THREE.Float32BufferAttribute(vox.nrm, 3));
+  voxGeo.setAttribute('color',    new THREE.Float32BufferAttribute(vox.col, 3));
+  body.add(new THREE.Mesh(voxGeo, new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.6, metalness: 0.2, flatShading: true,
+  })));
 
+  const blade = new THREE.MeshStandardMaterial({ color: 0x202128, roughness: 0.3, metalness: 0.7 });
   const mainRotor = new THREE.Group();
-  mainRotor.position.set(0, 1.65, 0);
+  mainRotor.position.set(0, ROWS * PX + 0.05, -0.15);
   for (let i = 0; i < 2; i++) {
     const b = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.06, 0.25), blade);
     b.rotation.y = (i * Math.PI) / 2;
@@ -100,7 +133,7 @@ export function createHelicopter({ seed } = {}) {
   body.add(mainRotor);
 
   const tailRotor = new THREE.Group();
-  tailRotor.position.set(0.35, 0.6, -3.6);
+  tailRotor.position.set(0.35, 2.3, 3.3);
   for (let i = 0; i < 2; i++) {
     const b = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.04, 0.1), blade);
     b.rotation.z = (i * Math.PI) / 2;

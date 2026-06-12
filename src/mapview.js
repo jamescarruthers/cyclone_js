@@ -1,5 +1,13 @@
 // 2-D archipelago map view.  Toggled with the M key, matching the
-// original's "MAP OR MAIN SCREEN" HUD option.
+// original's "MAP OR MAIN SCREEN" HUD option.  Island footprints are
+// drawn from the surveyed heightmaps, so the map shows the real
+// coastlines and terrain tiers of the 1985 originals.
+
+import { romXYToWorld } from './helicopter.js';
+
+const TIER_COLORS = ['#caba74', '#8fae4d', '#4a8a47', '#3a6e3a', '#8a8576', '#55514a'];
+const tierColor = (v) =>
+  TIER_COLORS[v <= 1 ? 0 : v === 2 ? 1 : v <= 5 ? 2 : v <= 9 ? 3 : v <= 13 ? 4 : 5];
 
 export function createMapView(world) {
   const canvas = document.createElement('canvas');
@@ -44,17 +52,30 @@ export function createMapView(world) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     }
 
-    // Islands
+    // Islands — true footprints from the surveyed heightmaps.
     ctx.font = '10px monospace';
     ctx.textBaseline = 'middle';
+    const cellPx = Math.ceil((1.6 / world.worldSize) * W) + 1;
     for (const is of world.islands) {
+      const hm = is.hm;
+      for (let j = 0; j < hm.h; j++) {
+        const row = hm.rows[j];
+        for (let i = 0; i < hm.w; i++) {
+          const v = parseInt(row[i], 36);
+          if (v === 0) continue;
+          const m = worldToMap({
+            x: romXYToWorld(hm.x0 + i * hm.step),
+            z: romXYToWorld(hm.y0 + j * hm.step),
+          });
+          ctx.fillStyle = tierColor(v);
+          ctx.fillRect(m.x, m.y, cellPx, cellPx);
+        }
+      }
       const p = worldToMap(is.center);
-      const r = (is.radius / world.worldSize) * W * 1.5;
-      ctx.fillStyle = is.isHome ? '#64c27a' : '#4a8a47';
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+      const rb = (Math.max(is.rx, is.rz) / world.worldSize) * H;
       ctx.fillStyle = is.isHome ? '#ffd257' : '#e3f4ff';
       ctx.textAlign = 'center';
-      ctx.fillText(is.name, p.x, p.y + r + 9);
+      ctx.fillText(is.name, p.x, p.y + rb + 9);
     }
 
     // Crates

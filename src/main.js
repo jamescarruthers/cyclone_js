@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { createWorld } from './world.js';
-import { createHelicopter, cellToWorld, romXYToWorld } from './helicopter.js';
+import { createHelicopter, cellToWorld, romXYToWorld, ROM_SCALE } from './helicopter.js';
 import { islandAt } from './rom-physics.js';
 import { ISLAND_DATA } from './islands_data.js';
+import { terrainLevelAt } from './terrain.js';
 import { createCyclone } from './cyclone.js';
 import { createCrate, createHelipad } from './props.js';
 import { createBirds, createAircraft, createSurvivors } from './hazards.js';
@@ -95,16 +96,22 @@ scene.add(sun);
 scene.add(new THREE.AmbientLight(0x8fb4d4, 0.55));
 scene.add(new THREE.HemisphereLight(0xbfe0ff, 0x234d2e, 0.35));
 
+// World height per ROM altitude unit (and per terrain level = 4 units).
+const ALT_Y = ROM_SCALE * 0.8;
+const LEVEL_Y = 4 * ALT_Y;
+
 // Helicopter starts on BASE's helipad.  The pad sits at the centre of
 // BASE's "inner box" from its $F230 record — the island's landing strip
-// in authentic flight coordinates.
+// in authentic flight coordinates — at the surveyed ground height there.
 const home = world.islands.find(i => i.isHome);
 const homeInner = ISLAND_DATA[world.islands.indexOf(home)].inner;
+const padRomX = (homeInner[0] + homeInner[1]) / 2;
+const padRomY = (homeInner[2] + homeInner[3]) / 2;
 const pad = createHelipad();
 pad.position.set(
-  romXYToWorld((homeInner[0] + homeInner[1]) / 2),
-  home.topCenter.y + 0.02,
-  romXYToWorld((homeInner[2] + homeInner[3]) / 2),
+  romXYToWorld(padRomX),
+  terrainLevelAt(padRomX, padRomY) * LEVEL_Y + 0.05,
+  romXYToWorld(padRomY),
 );
 scene.add(pad);
 
@@ -115,30 +122,30 @@ const helicopter = createHelicopter();
 // during its boot/menu phase, reaching $427C (~54%) by first take-off —
 // give spawns that observed boot-ready level.
 const FUEL_BOOT_READY = 0x427C;
-const PAD_REST_Y = () => pad.position.y + 1.5;
+// Landed altitude on the pad: ground level 2 (alt 8) snapped to the
+// ROM's 8-unit landing grid = altitude 8 — the template's exact value.
+const PAD_REST_Y = () => 8 * ALT_Y;
 helicopter.rom.fuelGauge = FUEL_BOOT_READY;
 helicopter.setWorldPosition(new THREE.Vector3(
   pad.position.x, PAD_REST_Y(), pad.position.z,
 ), { landed: true });
 scene.add(helicopter.group);
 
-// Crates — deterministic positions derived from island records
+// Crates — deterministic positions on REAL land cells (surveyed
+// heightmap, landable levels), spread across the non-home islands.
 const crates = [];
-for (let i = 0; i < CRATE_SPAWN; i++) {
-  const pickable = world.islands.filter(is => !is.isHome);
-  const island = pickable[i % pickable.length];
-  const c = createCrate();
-  const a = (i * 2.4) % (Math.PI * 2);
-  const r = island.radius * 0.55 * ((i % 3) / 3 + 0.3);
-  c.position.set(
-    island.topCenter.x + Math.cos(a) * r,
-    island.topCenter.y + 0.6,
-    island.topCenter.z + Math.sin(a) * r,
-  );
-  c.rotation.y = a;
-  c.userData = { picked: false, destroyed: false, island };
-  scene.add(c);
-  crates.push(c);
+{
+  const pickable = world.islands.filter(is => !is.isHome && is.landCells.length > 0);
+  for (let i = 0; i < CRATE_SPAWN; i++) {
+    const island = pickable[i % pickable.length];
+    const cell = island.landCells[(i * 53 + 11) % island.landCells.length];
+    const c = createCrate();
+    c.position.set(cell.wx, cell.wy + 0.9, cell.wz);
+    c.rotation.y = (i * 2.4) % (Math.PI * 2);
+    c.userData = { picked: false, destroyed: false, island };
+    scene.add(c);
+    crates.push(c);
+  }
 }
 
 // Cyclone — deterministic 50 Hz waypoint tour through the archipelago
@@ -251,14 +258,8 @@ function horizontalDistance(a, b) {
 }
 
 function altitudeAboveGround(p) {
-  let ground = 0;
-  for (const is of world.islands) {
-    const d = horizontalDistance(p, is.topCenter);
-    if (d < is.radius * 0.95) {
-      ground = Math.max(ground, is.topCenter.y);
-    }
-  }
-  return p.y - ground;
+  const gl = terrainLevelAt(helicopter.rom.posX, helicopter.rom.posY);
+  return p.y - gl * LEVEL_Y;
 }
 
 // Main loop --------------------------------------------------------------
@@ -322,28 +323,30 @@ function tick() {
       helicopter.setWorldPosition(p, { landed: helicopter.rom.landed === 1 });
     }
 
-    // Terrain contact — ROM landing semantics ($8A7A/$8AEB): touching down
-    // with a descent ramp of 3 crashes ($8AB7); a gentler touch lands,
-    // arms refuelling and snaps altitude to the 8-unit grid.  Flying into
-    // an island side, or descending to sea level ($7514), is fatal.
+    // Terrain contact — ROM landing semantics ($8A7A/$8AEB) against the
+    // surveyed heightmaps: the landing comparator works in altitude/4
+    // units, so the helicopter collides when alt/4 drops below the
+    // terrain level under it.  Touching down with a descent ramp of 3
+    // crashes ($8AB7); a gentler touch lands, arms refuelling and snaps
+    // altitude to the 8-unit grid.  Descending to sea level ($7514) or
+    // onto a water cell ditches.
     if (helicopter.rom.landed !== 1) {
-      // Exact over-island query: the ROM comparator at $76E5 against the
-      // record bounding boxes ($F230), not a visual-radius approximation.
       const overIdx = islandAt(helicopter.rom.posX, helicopter.rom.posY);
       const over = overIdx >= 0 ? world.islands[overIdx] : null;
-      const groundY = over ? over.topCenter.y + 1.5 : 0;
+      const gLevel = terrainLevelAt(helicopter.rom.posX, helicopter.rom.posY);
+      const alt4 = helicopter.rom.altitude >> 2;
       const byCyclone = helicopter.cyclone.dist < 3 ? ' — the cyclone tore you down' : '';
-      if (over && p.y < groundY - 2.5) {
-        loseLife('Flew into the terrain' + byCyclone);
-      } else if (helicopter.rom.hitGround === 1 && !over) {
+      if (helicopter.rom.hitGround === 1 && gLevel === 0) {
         loseLife('Ditched into the sea' + byCyclone);
-      } else if (p.y <= groundY + 0.1 && helicopter.rom.rampDn >= 1 && over) {
+      } else if (gLevel > 0 && alt4 < gLevel) {
+        loseLife('Flew into the terrain' + byCyclone);
+      } else if (gLevel > 0 && alt4 === gLevel && helicopter.rom.rampDn >= 1) {
         if (helicopter.rom.rampDn >= 3) {
           loseLife('Came down too fast' + byCyclone);
         } else {
-          helicopter.land({ refuelZone: true, groundY });
-          setStatus(`Landed on ${over.name} — refuelling. Hold SPACE to take off.`,
-            over.isHome ? 'good' : undefined);
+          helicopter.land({ refuelZone: true, groundY: gLevel * LEVEL_Y });
+          setStatus(`Landed on ${over ? over.name : 'land'} — refuelling. Hold SPACE to take off.`,
+            over && over.isHome ? 'good' : undefined);
         }
       }
     }
